@@ -5,4 +5,6 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+Environment=HOME=/root
+Environment=GH_CONFIG_DIR=/root/.config/gh
 ExecStart=/opt/dquery/deploy/update-rules.sh
