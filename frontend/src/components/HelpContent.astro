@@ -1,0 +1,78 @@
+---
+const { lang = "zh-CN" } = Astro.props;
+const isEn = lang === "en";
+const homeHref = isEn ? "/en/" : "/";
+const otherHref = isEn ? "/help/" : "/en/help/";
+const otherLabel = isEn ? "中文" : "English";
+---
+
+<main class="shell help-shell" id="main">
+  <article class="help-page">
+    <nav class="help-nav" aria-label={isEn ? "Page navigation" : "页面导航"}>
+      <a href={homeHref}>dns.js.gripe</a>
+      <a href={otherHref}>{otherLabel}</a>
+    </nav>
+
+    <header class="help-hero">
+      <img src="/media/favicon.png" alt="" />
+      <div>
+        <p>{isEn ? "DoH setup guide" : "DoH 设置指南"}</p>
+        <h1>{isEn ? "Set up dns.js.gripe on your device" : "在设备上使用 dns.js.gripe"}</h1>
+      </div>
+    </header>
+
+    {isEn ? (
+      <>
+        <section>
+          <h2>DoH address</h2>
+          <p>Use this address when your browser, phone, or app asks for a secure DNS or DNS-over-HTTPS server: <code>https://gateway.js.gripe/api/v1/dquery</code>.</p>
+        </section>
+        <section>
+          <h2>Windows</h2>
+          <p>Open Settings, go to Network & Internet, choose your active Wi-Fi or Ethernet connection, then look for DNS server assignment. Select manual or encrypted DNS when available, and paste the DoH address above.</p>
+        </section>
+        <section>
+          <h2>Android</h2>
+          <p>Open Settings, search for Private DNS, choose the custom/private DNS option, then enter the secure DNS provider name or address supported by your Android version. If your phone only accepts a hostname, use a browser or DNS app that supports DoH URLs.</p>
+        </section>
+        <section>
+          <h2>iPhone and iPad</h2>
+          <p>iOS usually needs a DNS profile or a DNS app for custom encrypted DNS. Add the DoH address in an app that supports DNS-over-HTTPS, then enable that profile in Settings.</p>
+        </section>
+        <section>
+          <h2>Quick check</h2>
+          <p>After setup, come back to the query page and try <code>example.com</code>. If a JSON result appears, the resolver is reachable.</p>
+        </section>
+      </>
+    ) : (
+      <>
+        <section>
+          <h2>DoH 地址</h2>
+          <p>当浏览器、手机或应用要求填写“安全 DNS”或“DNS-over-HTTPS”服务器时，使用这个地址：<code>https://gateway.js.gripe/api/v1/dquery</code>。</p>
+        </section>
+        <section>
+          <h2>Windows</h2>
+          <p>打开“设置”，进入“网络和 Internet”，选择正在使用的 Wi-Fi 或以太网连接，找到 DNS 服务器设置。若系统提供手动或加密 DNS 选项，把上面的 DoH 地址填进去即可。</p>
+        </section>
+        <section>
+          <h2>安卓</h2>
+          <p>打开“设置”，搜索“私人 DNS”或“Private DNS”。如果你的手机只能填写主机名，可以改用支持 DoH URL 的浏览器或 DNS 应用，再填入上面的地址。</p>
+        </section>
+        <section>
+          <h2>iPhone 和 iPad</h2>
+          <p>iOS 通常需要 DNS 配置描述文件或 DNS 应用来使用自定义加密 DNS。把上面的 DoH 地址添加到支持 DNS-over-HTTPS 的应用中，然后在系统设置里启用对应配置。</p>
+        </section>
+        <section>
+          <h2>快速确认</h2>
+          <p>设置完成后回到查询页，输入 <code>example.com</code>。如果能看到 JSON 结果，说明这个解析服务可以正常访问。</p>
+        </section>
+      </>
+    )}
+  </article>
+
+  <footer class="page-footer">
+    <div>
+      <a href={homeHref}>{isEn ? "Home" : "首页"}</a>
+    </div>
+  </footer>
+</main>

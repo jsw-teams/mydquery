@@ -1,0 +1,5 @@
+Build note:
+- Source package was refactored and repacked offline.
+- go.sum is still absent because this environment cannot reach Go module mirrors.
+- On the VPS, run: go mod tidy
+- Then build the two binaries exactly as documented in DEPLOY_VPS.md.

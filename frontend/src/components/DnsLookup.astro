@@ -1,0 +1,97 @@
+---
+import dqueryScript from "../scripts/dquery.js?url";
+
+const { lang = "zh-CN" } = Astro.props;
+const isEn = lang === "en";
+const endpoint = "https://gateway.js.gripe/api/v1/dquery";
+
+const t = isEn
+  ? {
+      title: ["dns", ".", "js", ".", "gripe"],
+      subtitle: "Public DNS",
+      name: "DNS Name",
+      type: "RR Type",
+      resolve: "Resolve",
+      hint: "Enter a domain like example.com here.",
+      footerHelp: "Help",
+      footerFlush: "Cache Flush",
+      helpHref: "/en/help/",
+      otherHref: "/",
+      otherLabel: "中文"
+    }
+  : {
+      title: ["dns", ".", "js", ".", "gripe"],
+      subtitle: "公共 DNS",
+      name: "DNS 名称",
+      type: "记录类型",
+      resolve: "查询",
+      hint: "在这里输入域名，例如 example.com。",
+      footerHelp: "帮助",
+      footerFlush: "刷新缓存",
+      helpHref: "/help/",
+      otherHref: "/en/",
+      otherLabel: "English"
+    };
+---
+
+<main class="shell" id="main">
+  <section class="lookup" aria-labelledby="page-title">
+    <nav class="language-nav" aria-label={isEn ? "Language" : "语言"}>
+      <a href={t.otherHref}>{t.otherLabel}</a>
+    </nav>
+
+    <header class="brand">
+      <img src="/media/mascot-query.png" alt="" />
+      <div>
+        <h1 id="page-title">
+          {t.title.map((part) => <span>{part}</span>)}
+        </h1>
+        <p>{t.subtitle}</p>
+      </div>
+    </header>
+
+    <form class="query-form" id="dns-form">
+      <label class="name-field">
+        <span>{t.name}</span>
+        <input id="domain" name="name" inputmode="url" autocomplete="off" spellcheck="false" placeholder={t.name} required />
+      </label>
+
+      <label class="type-field">
+        <span>{t.type}</span>
+        <select id="record-type" name="type">
+          <option value="A">A - IPv4</option>
+          <option value="AAAA">AAAA - IPv6</option>
+          <option value="CNAME">CNAME - Alias</option>
+          <option value="MX">MX - Mail</option>
+          <option value="NS">NS - Name server</option>
+          <option value="TXT">TXT - Text</option>
+          <option value="CAA">CAA - Certificate authority</option>
+          <option value="HTTPS">HTTPS - Service binding</option>
+          <option value="SRV">SRV - Service</option>
+          <option value="SOA">SOA - Zone authority</option>
+          <option value="PTR">PTR - Reverse lookup</option>
+          <option value="DS">DS - Delegation signer</option>
+          <option value="DNSKEY">DNSKEY - DNSSEC key</option>
+        </select>
+      </label>
+
+      <button type="submit">{t.resolve}</button>
+    </form>
+
+    <p class="hint">{t.hint}</p>
+
+    <section class="result" id="result-panel" hidden aria-live="polite" aria-atomic="false">
+      <h2 id="result-title">Result</h2>
+      <pre id="json-result" tabindex="0"></pre>
+    </section>
+  </section>
+
+  <footer class="page-footer">
+    <div>
+      <a href={t.helpHref}>{t.footerHelp}</a>
+      <button class="link-button" type="button" id="cache-flush">{t.footerFlush}</button>
+    </div>
+  </footer>
+</main>
+
+<script src={dqueryScript} data-endpoint={endpoint} data-lang={lang}></script>

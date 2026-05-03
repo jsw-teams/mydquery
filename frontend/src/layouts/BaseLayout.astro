@@ -1,0 +1,42 @@
+---
+import "../styles/global.css";
+
+const {
+  title = "dqueryd",
+  description = "A compact DNS over HTTPS query console for dqueryd.",
+  lang = "zh-CN",
+  canonical = "https://dns.js.gripe/",
+  alternates = [
+    { lang: "zh-CN", href: "https://dns.js.gripe/" },
+    { lang: "en", href: "https://dns.js.gripe/en/" }
+  ],
+  jsonLd = null
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang={lang}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="canonical" href={canonical} />
+    {alternates.map((alternate) => <link rel="alternate" hreflang={alternate.lang} href={alternate.href} />)}
+    <link rel="alternate" hreflang="x-default" href="https://dns.js.gripe/" />
+    <link rel="icon" href="/media/favicon.png" type="image/png" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content="https://dns.js.gripe/media/mascot-query.png" />
+    <meta name="twitter:card" content="summary" />
+    <title>{title}</title>
+    {jsonLd && <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <slot />
+  </body>
+</html>

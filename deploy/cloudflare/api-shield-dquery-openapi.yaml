@@ -1,0 +1,150 @@
+openapi: 3.0.3
+info:
+  title: gateway.js.gripe dquery API
+  version: 1.0.0
+servers:
+  - url: https://gateway.js.gripe
+paths:
+  /api/v1/dquery:
+    get:
+      summary: DNS-over-HTTPS GET endpoint
+      parameters:
+        - in: query
+          name: dns
+          required: true
+          schema:
+            type: string
+            minLength: 8
+          description: Base64url-encoded DNS wireformat message.
+        - in: query
+          name: ecs
+          required: false
+          schema:
+            type: string
+            example: 1.2.3.0/24
+          description: Optional explicit ECS subnet when client-side ECS injection is desired.
+        - in: header
+          name: accept
+          required: false
+          schema:
+            type: string
+            example: application/dns-message
+      responses:
+        '200':
+          description: DNS wireformat response
+          content:
+            application/dns-message:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Upstream failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      summary: DNS-over-HTTPS POST endpoint
+      parameters:
+        - in: query
+          name: ecs
+          required: false
+          schema:
+            type: string
+            example: 1.2.3.0/24
+          description: Optional explicit ECS subnet when client-side ECS injection is desired.
+        - in: header
+          name: content-type
+          required: false
+          schema:
+            type: string
+            example: application/dns-message
+      requestBody:
+        required: true
+        content:
+          application/dns-message:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: DNS wireformat response
+          content:
+            application/dns-message:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Upstream failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/dquery/healthz:
+    get:
+      summary: Health check endpoint
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: string
+  /api/v1/dquery/readyz:
+    get:
+      summary: Readiness endpoint
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: string
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - ok
+        - error

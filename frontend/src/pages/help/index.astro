@@ -1,0 +1,27 @@
+---
+import HelpContent from "../../components/HelpContent.astro";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+const title = "如何设置 dns.js.gripe DoH";
+const description = "在 Windows、安卓、iPhone 和 iPad 上设置 dns.js.gripe DNS-over-HTTPS 的简明说明。";
+---
+
+<BaseLayout
+  title={title}
+  description={description}
+  lang="zh-CN"
+  canonical="https://dns.js.gripe/help/"
+  alternates={[
+    { lang: "zh-CN", href: "https://dns.js.gripe/help/" },
+    { lang: "en", href: "https://dns.js.gripe/en/help/" }
+  ]}
+  jsonLd={{
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    headline: title,
+    url: "https://dns.js.gripe/help/",
+    description
+  }}
+>
+  <HelpContent lang="zh-CN" />
+</BaseLayout>

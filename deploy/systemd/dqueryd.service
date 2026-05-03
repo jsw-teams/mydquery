@@ -1,0 +1,24 @@
+[Unit]
+Description=dqueryd - DoH split gateway for gateway.js.gripe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dqueryd
+Group=dqueryd
+WorkingDirectory=/opt/dquery
+ExecStart=/opt/dquery/bin/dqueryd -config /etc/dqueryd/config.yaml
+Restart=always
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dqueryd /var/log/dqueryd
+AmbientCapabilities=
+CapabilityBoundingSet=
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

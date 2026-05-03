@@ -1,0 +1,86 @@
+server:
+  listen: 127.0.0.1:18053
+  read_timeout: 10s
+  write_timeout: 20s
+  idle_timeout: 60s
+  max_request_body: 65535
+  client_ip_header: CF-Connecting-IP
+
+logging:
+  level: info
+
+china_rules:
+  compact_json_path: /var/lib/dqueryd/chinamax_classical.compact.json
+
+routing:
+  debug_response_headers: false
+  cn:
+    upstream: selfhosted_cn_1
+    fallback_upstream: alidns_cn
+    ecs_source: visitor
+  global:
+    upstream: cloudflare_gateway_global
+    fallback_upstream: google_global
+    ecs_source: client
+
+ecs:
+  visitor_v4_mask: 24
+  visitor_v6_mask: 48
+  client_v4_max_mask: 24
+  client_v6_max_mask: 48
+  allow_query_ecs: true
+  allow_header_ecs: true
+  header_name: X-ECS
+
+cache:
+  enabled: true
+  max_items: 50000
+  default_positive_ttl: 300s
+  min_positive_ttl: 60s
+  max_positive_ttl: 1800s
+  negative_ttl: 60s
+  stale_if_error: 30m
+  response_browser_max_age: 120s
+  response_shared_max_age: 300s
+  response_stale_while_revalidate: 60s
+  response_stale_if_error: 1800s
+
+cn_learning:
+  enabled: true
+  mode: all_answers_cn
+  ttl_floor: 60s
+  ttl_cap: 10m
+
+upstreams:
+  selfhosted_cn_1:
+    type: doh_wire
+    url: https://way.jsw.ac.cn/api/v1/edge-cn-rslv-7f3c/query
+    method: GET
+    http_version: h1
+    timeout: 5s
+    headers:
+      X-Upstream-Key: REPLACE_WITH_NEW_SECRET
+
+  alidns_cn:
+    type: doh_wire
+    url: https://dns.alidns.com/dns-query
+    method: POST
+    http_version: auto
+    timeout: 5s
+    headers: {}
+
+  cloudflare_gateway_global:
+    type: doh_wire
+    url: https://dni9tppp7v.cloudflare-gateway.com/dns-query
+    method: POST
+    http_version: auto
+    timeout: 5s
+    headers: {}
+
+  google_global:
+    type: doh_wire
+    url: https://dns.google/dns-query
+    method: POST
+    http_version: auto
+    timeout: 5s
+    headers: {}

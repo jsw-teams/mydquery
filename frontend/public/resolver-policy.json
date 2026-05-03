@@ -1,0 +1,17 @@
+{
+  "endpoint": "https://gateway.js.gripe/api/v1/dquery",
+  "routes": [
+    {
+      "name": "China domains",
+      "route": "cn",
+      "upstream": "hk-hkg.doh.sb",
+      "url": "https://hk-hkg.doh.sb/dns-query"
+    },
+    {
+      "name": "Other domains",
+      "route": "global",
+      "upstream": "Cloudflare Gateway",
+      "url": "https://gyvpces7ig.cloudflare-gateway.com/dns-query"
+    }
+  ]
+}

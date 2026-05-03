@@ -1,0 +1,29 @@
+---
+import DnsLookup from "../../components/DnsLookup.astro";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+const title = "dns.js.gripe Public DNS Query";
+const description = "Query public DNS records with dns.js.gripe and inspect the raw DNS JSON response.";
+---
+
+<BaseLayout
+  title={title}
+  description={description}
+  lang="en"
+  canonical="https://dns.js.gripe/en/"
+  alternates={[
+    { lang: "zh-CN", href: "https://dns.js.gripe/" },
+    { lang: "en", href: "https://dns.js.gripe/en/" }
+  ]}
+  jsonLd={{
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    name: "dns.js.gripe",
+    applicationCategory: "DeveloperApplication",
+    operatingSystem: "Any",
+    url: "https://dns.js.gripe/en/",
+    description
+  }}
+>
+  <DnsLookup lang="en" />
+</BaseLayout>
