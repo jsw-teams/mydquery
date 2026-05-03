@@ -1,0 +1,8 @@
+[Unit]
+Description=Update dquery ChinaMax rules
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dquery/deploy/update-rules.sh

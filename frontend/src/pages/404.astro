@@ -1,0 +1,39 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout
+  title="404 - dns.js.gripe"
+  description="The requested dns.js.gripe page was not found."
+  canonical="https://dns.js.gripe/404.html"
+  alternates={[
+    { lang: "zh-CN", href: "https://dns.js.gripe/404.html" },
+    { lang: "en", href: "https://dns.js.gripe/404.html" }
+  ]}
+>
+  <main class="shell help-shell" id="main">
+    <article class="help-page">
+      <header class="help-hero">
+        <img src="/media/favicon.png" alt="" />
+        <div>
+          <p>404</p>
+          <h1>页面不存在</h1>
+        </div>
+      </header>
+      <section>
+        <h2>找不到这个页面</h2>
+        <p>这个地址没有可访问的页面。你可以返回首页继续查询 DNS。</p>
+      </section>
+      <section>
+        <h2>Page not found</h2>
+        <p>This address does not have a public page. Return home to continue querying DNS.</p>
+      </section>
+    </article>
+    <footer class="page-footer">
+      <div>
+        <a href="/">首页</a>
+        <a href="/en/">Home</a>
+      </div>
+    </footer>
+  </main>
+</BaseLayout>

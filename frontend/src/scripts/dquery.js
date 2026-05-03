@@ -296,9 +296,7 @@ async function flushBrowserCache() {
     localStorage.clear();
     sessionStorage.clear();
   } finally {
-    const url = new URL(window.location.href);
-    url.searchParams.set("cache", String(Date.now()));
-    window.location.replace(url);
+    window.location.reload();
   }
 }
 
