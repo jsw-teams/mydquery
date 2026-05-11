@@ -121,9 +121,6 @@ func (r *Resolver) resolveDoHWire(ctx context.Context, upstreamName string, upst
 }
 
 func buildPayload(query *dns.Msg, queryBytes []byte, selectedECS string) ([]byte, error) {
-	if strings.TrimSpace(selectedECS) == "" && len(queryBytes) > 0 {
-		return queryBytes, nil
-	}
 	outbound, err := ecs.ApplyToMessage(query, selectedECS)
 	if err != nil {
 		return nil, fmt.Errorf("apply ecs: %w", err)

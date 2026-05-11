@@ -1,1 +1,8 @@
 # one rule per line
+
+# AliDNS public resolver DoH/DoT endpoints.
+domain:dns.alidns.com
+ip-cidr:223.5.5.5/32
+ip-cidr:223.6.6.6/32
+ip-cidr6:2400:3200::1/128
+ip-cidr6:2400:3200:baba::1/128

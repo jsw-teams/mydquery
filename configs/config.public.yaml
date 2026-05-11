@@ -17,19 +17,19 @@ routing:
   cn:
     upstream: doh_sb_hk
     fallback_upstream: ""
-    ecs_source: visitor
+    ecs_source: none
   global:
     upstream: cloudflare_gateway_global
     fallback_upstream: ""
-    ecs_source: client
+    ecs_source: none
 
 ecs:
   visitor_v4_mask: 24
   visitor_v6_mask: 48
   client_v4_max_mask: 24
   client_v6_max_mask: 48
-  allow_query_ecs: true
-  allow_header_ecs: true
+  allow_query_ecs: false
+  allow_header_ecs: false
   header_name: X-ECS
 
 cache:
