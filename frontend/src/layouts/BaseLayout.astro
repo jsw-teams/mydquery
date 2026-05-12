@@ -30,13 +30,23 @@ const {
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />
-    <meta property="og:image" content="https://dns.js.gripe/media/mascot-query.png" />
-    <meta name="twitter:card" content="summary" />
+    <meta property="og:image" content="https://dns.js.gripe/media/dquery-banner.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://dns.js.gripe/media/dquery-banner.png" />
     <title>{title}</title>
     {jsonLd && <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
     <slot />
+    <script>
+      (() => {
+        const language = navigator.language || "";
+        const path = window.location.pathname;
+        if (path === "/" && !language.toLowerCase().startsWith("zh")) {
+          window.location.replace("/en/");
+        }
+      })();
+    </script>
   </body>
 </html>

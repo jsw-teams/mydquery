@@ -28,7 +28,15 @@ func main() {
 		log.Fatalf("load china rules: %v", err)
 	}
 	resolver := doh.NewResolver(cfg.Upstreams)
-	app := server.New(cfg, rules, resolver)
+	app, err := server.New(cfg, rules, resolver)
+	if err != nil {
+		log.Fatalf("init server: %v", err)
+	}
+	refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	if err := app.RefreshKnownRuleSets(refreshCtx); err != nil {
+		log.Printf("level=warn refresh_known_rulesets_startup err=%v", err)
+	}
+	refreshCancel()
 
 	srv := &http.Server{
 		Addr:         cfg.Server.Listen,
@@ -48,6 +56,7 @@ func main() {
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	app.StartKnownRuleSetRefresher(sigCtx)
 
 	select {
 	case err := <-errCh:

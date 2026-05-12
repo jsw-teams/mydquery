@@ -31,6 +31,14 @@ const rcodeNames = {
   5: "REFUSED"
 };
 
+function formatDNSName(labels) {
+  const name = labels
+    .map((label) => label.replace(/\.+$/g, ""))
+    .filter(Boolean)
+    .join(".");
+  return name ? `${name}.` : ".";
+}
+
 const lookupEl = document.querySelector(".lookup");
 const form = document.querySelector("#dns-form");
 const domainInput = document.querySelector("#domain");
@@ -128,7 +136,7 @@ function readName(view, offset, depth = 0) {
     cursor += length;
   }
 
-  return { name: labels.filter(Boolean).join(".") + ".", offset: nextOffset };
+  return { name: formatDNSName(labels), offset: nextOffset };
 }
 
 function parseIPv6(view, offset) {

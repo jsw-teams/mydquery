@@ -1,0 +1,33 @@
+{
+  "app": {
+    "name": "mydquery",
+    "base_url": "https://dns.js.gripe",
+    "listen_addr": "127.0.0.1:18053",
+    "public_dir": "/opt/dquery/frontend/dist",
+    "data_dir": "/var/lib/dqueryd"
+  },
+  "account": {
+    "client_name": "dquery personal DNS console",
+    "client_id": "[DQUERY_ACCOUNT_CLIENT_ID]",
+    "client_secret": "[DQUERY_ACCOUNT_APIKEY]",
+    "login_url": "https://account.js.gripe/login",
+    "account_base_url": "http://127.0.0.1:9100/api/v1/myaccount",
+    "me_url": "http://127.0.0.1:9100/api/v1/myaccount/me",
+    "redirect_uri": "https://dns.js.gripe/auth/account/callback",
+    "scopes": [
+      "accounts:read",
+      "identities:resolve"
+    ]
+  },
+  "security": {
+    "session_cookie_name": "dquery_session",
+    "session_ttl_hours": 168,
+    "cookie_secure": true
+  },
+  "dquery": {
+    "public_query_endpoint": "https://gateway.js.gripe/api/v1/dquery",
+    "personal_query_endpoint": "https://gateway.js.gripe/api/v1/dquery",
+    "allow_public_query": true,
+    "allow_personal_console": true
+  }
+}

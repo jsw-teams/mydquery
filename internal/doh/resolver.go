@@ -3,13 +3,18 @@ package doh
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -27,8 +32,10 @@ type Result struct {
 }
 
 type upstreamClient struct {
-	spec   config.UpstreamSpec
-	client *http.Client
+	spec       config.UpstreamSpec
+	client     *http.Client
+	signer     *dqueryHMACSigner
+	concurrent chan struct{}
 }
 
 type Resolver struct {
@@ -38,9 +45,21 @@ type Resolver struct {
 func NewResolver(upstreams map[string]config.UpstreamSpec) *Resolver {
 	resolver := &Resolver{upstreams: make(map[string]upstreamClient, len(upstreams))}
 	for name, spec := range upstreams {
-		resolver.upstreams[name] = upstreamClient{spec: spec, client: newHTTPClient(spec)}
+		resolver.upstreams[name] = upstreamClient{
+			spec:       spec,
+			client:     newHTTPClient(spec),
+			signer:     newDQueryHMACSigner(spec.HMAC),
+			concurrent: newConcurrencyGate(spec.MaxConcurrent),
+		}
 	}
 	return resolver
+}
+
+func newConcurrencyGate(maxConcurrent int) chan struct{} {
+	if maxConcurrent <= 0 {
+		return nil
+	}
+	return make(chan struct{}, maxConcurrent)
 }
 
 func newHTTPClient(spec config.UpstreamSpec) *http.Client {
@@ -51,7 +70,7 @@ func newHTTPClient(spec config.UpstreamSpec) *http.Client {
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          256,
 		MaxIdleConnsPerHost:   64,
-		MaxConnsPerHost:       0,
+		MaxConnsPerHost:       spec.MaxConcurrent,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: spec.Timeout,
@@ -84,6 +103,11 @@ func (r *Resolver) resolveDoHWire(ctx context.Context, upstreamName string, upst
 	if err != nil {
 		return nil, err
 	}
+	if release, err := acquireUpstreamSlot(ctx, upstream.concurrent); err != nil {
+		return nil, err
+	} else {
+		defer release()
+	}
 
 	method := strings.ToUpper(strings.TrimSpace(upstream.spec.Method))
 	if method == "" {
@@ -99,6 +123,11 @@ func (r *Resolver) resolveDoHWire(ctx context.Context, upstreamName string, upst
 			continue
 		}
 		req.Header.Set(k, v)
+	}
+	if upstream.signer != nil {
+		if err := upstream.signer.Sign(req, payload); err != nil {
+			return nil, fmt.Errorf("sign upstream request: %w", err)
+		}
 	}
 
 	resp, err := upstream.client.Do(req)
@@ -120,7 +149,22 @@ func (r *Resolver) resolveDoHWire(ctx context.Context, upstreamName string, upst
 	return &Result{UpstreamName: upstreamName, ResponseBytes: body}, nil
 }
 
+func acquireUpstreamSlot(ctx context.Context, gate chan struct{}) (func(), error) {
+	if gate == nil {
+		return func() {}, nil
+	}
+	select {
+	case gate <- struct{}{}:
+		return func() { <-gate }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("wait for upstream concurrency slot: %w", ctx.Err())
+	}
+}
+
 func buildPayload(query *dns.Msg, queryBytes []byte, selectedECS string) ([]byte, error) {
+	if strings.TrimSpace(selectedECS) == "" && len(queryBytes) > 0 && !hasEDNS0Subnet(query) {
+		return queryBytes, nil
+	}
 	outbound, err := ecs.ApplyToMessage(query, selectedECS)
 	if err != nil {
 		return nil, fmt.Errorf("apply ecs: %w", err)
@@ -159,4 +203,87 @@ func buildRequest(ctx context.Context, spec config.UpstreamSpec, method string, 
 	default:
 		return nil, fmt.Errorf("unsupported upstream method %q", method)
 	}
+}
+
+func hasEDNS0Subnet(query *dns.Msg) bool {
+	opt := query.IsEdns0()
+	if opt == nil {
+		return false
+	}
+	for _, item := range opt.Option {
+		if _, ok := item.(*dns.EDNS0_SUBNET); ok {
+			return true
+		}
+	}
+	return false
+}
+
+type dqueryHMACSigner struct {
+	keyID  string
+	secret string
+}
+
+func newDQueryHMACSigner(spec config.UpstreamHMACSpec) *dqueryHMACSigner {
+	if !spec.Enabled {
+		return nil
+	}
+	keyID := strings.TrimSpace(spec.KeyID)
+	if keyID == "" {
+		keyID = strings.TrimSpace(os.Getenv("DQUERY_KEY_ID"))
+	}
+	if keyID == "" {
+		keyID = "default"
+	}
+	secret := spec.Secret
+	if strings.TrimSpace(secret) == "" {
+		envName := strings.TrimSpace(spec.SecretEnv)
+		if envName == "" {
+			envName = "DQUERY_HMAC_SECRET"
+		}
+		secret = os.Getenv(envName)
+	}
+	return &dqueryHMACSigner{keyID: keyID, secret: secret}
+}
+
+func (s *dqueryHMACSigner) Sign(req *http.Request, body []byte) error {
+	if len(s.secret) < 32 {
+		return fmt.Errorf("DQUERY_HMAC_SECRET must be at least 32 characters")
+	}
+
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	nonce, err := randomBase64URL(18)
+	if err != nil {
+		return err
+	}
+
+	sum := sha256.Sum256(body)
+	bodyHash := hex.EncodeToString(sum[:])
+	canonical := strings.Join([]string{
+		"DQUERY-HMAC-SHA256",
+		strings.ToUpper(req.Method),
+		strings.ToLower(req.URL.Host),
+		req.URL.Path,
+		ts,
+		nonce,
+		bodyHash,
+	}, "\n")
+
+	mac := hmac.New(sha256.New, []byte(s.secret))
+	_, _ = mac.Write([]byte(canonical))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+
+	req.Header.Set("X-DQuery-Key-Id", s.keyID)
+	req.Header.Set("X-DQuery-Timestamp", ts)
+	req.Header.Set("X-DQuery-Nonce", nonce)
+	req.Header.Set("X-DQuery-Content-SHA256", bodyHash)
+	req.Header.Set("X-DQuery-Signature", "v1="+sig)
+	return nil
+}
+
+func randomBase64URL(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

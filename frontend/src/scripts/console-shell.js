@@ -1,0 +1,182 @@
+const script = document.currentScript;
+const apiBase = script?.dataset.endpoint || "https://gateway.js.gripe/api/v1/dquery";
+const lang = navigator.language?.toLowerCase().startsWith("zh") ? "zh" : "en";
+
+const copy = {
+  en: {
+    navOverview: "Overview", navRulesets: "Rule sets", navDomainRules: "Domain rules", navBlocking: "Blocking", navLogs: "Logs", navAccount: "Account",
+    publicLookup: "Public lookup", kicker: "Account DNS", title: "Personal DNS Console", logout: "Sign out",
+    endpointTitle: "DoH endpoint", personalEndpoint: "Personal DoH endpoint", rulesetCount: "Rule sets", blockMode: "Blocking mode", logWindow: "Log retention",
+    rulesetsTitle: "Blocklist rule sets", rulesetNote: "Known rule sets are managed by the platform. Choose which lists are active for your DNS endpoint.", enableRuleset: "Enable", disableRuleset: "Disable",
+    domainRulesTitle: "Domain override rules", domainRulesNote: "Choose whether a domain skips the rule sets or is blocked.", domainName: "Domain", domainAction: "Action", actionAllow: "Skip rule sets", actionBlock: "Block", saveDomainRule: "Save domain rule", deleteRule: "Delete",
+    blockingTitle: "Blocking behavior", modeNxdomain: "Do not resolve", modeBlockPage: "Hijack to block page", blockPageUrl: "Custom block page URL", saveBlocking: "Save behavior",
+    logsTitle: "Query logs", logsNote: "Only the most recent 24 hours are retained.", logSearch: "Domain filter", searchLogs: "Search logs", clearLogs: "Clear logs", accountTitle: "Account",
+    enabled: "Enabled", disabled: "Disabled", pending: "Pending", synced: "Synced", error: "Sync error", connected: "Connected", saved: "Saved", logsCleared: "Logs cleared", signedOut: "Signed out", loadFailed: "Connection failed. Please check network or CORS settings.", emptySets: "No known rule sets are available.", emptyDomainRules: "No domain override rules yet.", emptyLogs: "No query logs in the last 24 hours."
+  },
+  zh: {
+    navOverview: "总览", navRulesets: "规则集", navDomainRules: "域名规则", navBlocking: "拦截行为", navLogs: "查询日志", navAccount: "账户",
+    publicLookup: "公共查询", kicker: "账户 DNS", title: "个人 DNS 控制台", logout: "退出账户",
+    endpointTitle: "DoH 端点", personalEndpoint: "个人 DoH 入口", rulesetCount: "规则集", blockMode: "拦截模式", logWindow: "日志保留",
+    rulesetsTitle: "名单拦截规则集", rulesetNote: "著名规则集由平台维护。你可以选择哪些规则集对个人 DNS 生效。", enableRuleset: "启用", disableRuleset: "禁用",
+    domainRulesTitle: "域名覆盖规则", domainRulesNote: "为域名选择跳过规则集规则或直接拦截。", domainName: "域名", domainAction: "行为", actionAllow: "跳过规则集", actionBlock: "拦截", saveDomainRule: "保存域名规则", deleteRule: "删除",
+    blockingTitle: "拦截行为", modeNxdomain: "不解析", modeBlockPage: "劫持到拦截页", blockPageUrl: "自定义拦截页 URL", saveBlocking: "保存拦截行为",
+    logsTitle: "查询日志", logsNote: "仅保留最近 1 天。", logSearch: "域名过滤", searchLogs: "查询日志", clearLogs: "清空日志", accountTitle: "账户",
+    enabled: "已启用", disabled: "已禁用", pending: "待同步", synced: "已同步", error: "同步异常", connected: "已连接", saved: "已保存", logsCleared: "日志已清空", signedOut: "已退出", loadFailed: "连接失败，请检查网络或 CORS 设置。", emptySets: "暂无可用著名规则集。", emptyDomainRules: "还没有域名覆盖规则。", emptyLogs: "最近 1 天没有查询日志。"
+  }
+};
+
+const state = { token: sessionStorage.getItem("dquery.accountToken") || "", user: null, settings: { mode: "nxdomain", block_page_url: "" }, rulesets: [], domainRules: [], domainAction: "allow", logs: [] };
+const els = {
+  status: document.querySelector("#session-status"), endpoint: document.querySelector("#personal-endpoint"), metricRulesets: document.querySelector("#metric-rulesets"), metricBlockMode: document.querySelector("#metric-block-mode"),
+  rulesetList: document.querySelector("#ruleset-list"), domainRuleForm: document.querySelector("#domain-rule-form"), domainRuleDomain: document.querySelector("#domain-rule-domain"), domainRuleList: document.querySelector("#domain-rule-list"),
+  blockURL: document.querySelector("#block-page-url"), saveBlocking: document.querySelector("#save-blocking"), logForm: document.querySelector("#log-form"), logQuery: document.querySelector("#log-query"), clearLogs: document.querySelector("#clear-logs"), logList: document.querySelector("#log-list"), accountEmail: document.querySelector("#account-email")
+};
+
+document.querySelectorAll("[data-i18n]").forEach((node) => { const value = copy[lang][node.dataset.i18n]; if (value) node.textContent = value; });
+
+function authHeaders() { return state.token ? { Authorization: `Bearer ${state.token}` } : {}; }
+async function api(path, options = {}) {
+  const response = await fetch(`${apiBase}${path}`, { ...options, headers: { Accept: "application/json", "Content-Type": "application/json", ...authHeaders(), ...(options.headers || {}) }, cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) { const error = new Error(payload.error || `HTTP ${response.status}`); error.status = response.status; throw error; }
+  return payload;
+}
+function setStatus(message, tone = "") { els.status.textContent = message; els.status.dataset.tone = tone; }
+function redirectToLogin() { window.location.replace("/login"); }
+function signOut() { sessionStorage.removeItem("dquery.accountToken"); setStatus(copy[lang].signedOut, "ok"); window.location.replace("/login"); }
+function empty(text) { const node = document.createElement("div"); node.className = "empty-state"; node.textContent = text; return node; }
+function item(label, meta, chip) { const row = document.createElement("div"); row.className = "data-item"; row.innerHTML = "<div><strong></strong><span></span></div><em></em>"; row.querySelector("strong").textContent = label; row.querySelector("span").textContent = meta; row.querySelector("em").textContent = chip; return row; }
+function modeLabel(mode) { return mode === "block_page" ? copy[lang].modeBlockPage : copy[lang].modeNxdomain; }
+
+function showView(view) {
+  document.querySelectorAll(".side-nav button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+  document.querySelectorAll(".console-view").forEach((panel) => { const active = panel.dataset.panel === view; panel.classList.toggle("active", active); panel.hidden = !active; });
+}
+function setBlockMode(mode) {
+  state.settings.mode = mode;
+  document.querySelectorAll('.segmented[data-control="block_mode"] button').forEach((button) => button.classList.toggle("active", button.dataset.value === mode));
+  els.metricBlockMode.textContent = mode === "block_page" ? "BLOCK PAGE" : "NXDOMAIN";
+}
+function compactSource(value) {
+  try {
+    const url = new URL(value);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const hint = parts.slice(0, 2).join("/");
+    return hint ? `${url.hostname} / ${hint}` : url.hostname;
+  } catch {
+    return String(value || "").replace(/^https?:\/\//, "").slice(0, 56);
+  }
+}
+function renderRulesets() {
+  els.metricRulesets.textContent = String(state.rulesets.length);
+  els.rulesetList.replaceChildren();
+  if (state.rulesets.length === 0) { els.rulesetList.append(empty(copy[lang].emptySets)); return; }
+  for (const set of state.rulesets) {
+    const statusLabel = `${set.enabled ? copy[lang].enabled : copy[lang].disabled} / ${copy[lang][set.status] || set.status || copy[lang].pending} / ${set.domain_count || 0}`;
+    const row = item(set.name, compactSource(set.source_url), statusLabel);
+    row.dataset.enabled = String(set.enabled === true);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `pixel-button small ${set.enabled ? "danger" : ""}`;
+    button.textContent = set.enabled ? copy[lang].disableRuleset : copy[lang].enableRuleset;
+    button.addEventListener("click", () => updateRuleset(set.id, !set.enabled));
+    row.append(button);
+    els.rulesetList.append(row);
+  }
+}
+function renderDomainRules() {
+  els.domainRuleList.replaceChildren();
+  if (state.domainRules.length === 0) { els.domainRuleList.append(empty(copy[lang].emptyDomainRules)); return; }
+  for (const rule of state.domainRules) {
+    const row = item(rule.domain, rule.match_type === "exact" ? "Exact" : "Suffix", rule.action === "block" ? copy[lang].actionBlock : copy[lang].actionAllow);
+    row.dataset.enabled = String(rule.enabled !== false);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "pixel-button danger small";
+    button.textContent = copy[lang].deleteRule;
+    button.addEventListener("click", () => deleteDomainRule(rule.id));
+    row.append(button);
+    els.domainRuleList.append(row);
+  }
+}
+function renderLogs() {
+  els.logList.replaceChildren();
+  if (state.logs.length === 0) { els.logList.append(empty(copy[lang].emptyLogs)); return; }
+  for (const entry of state.logs) els.logList.append(item(`${entry.qname} / ${entry.qtype}`, entry.created_at, entry.action));
+}
+async function loadAll() {
+  if (!state.token) { redirectToLogin(); return; }
+  try {
+    const [session, settings, rulesets, domainRules, logs] = await Promise.all([api("/session"), api("/settings"), api("/rulesets"), api("/domain-rules"), api("/logs")]);
+    state.user = session.user;
+    state.settings = settings.settings || state.settings;
+    state.rulesets = rulesets.rulesets || [];
+    state.domainRules = domainRules.rules || [];
+    state.logs = logs.logs || [];
+    els.endpoint.textContent = `https://gateway.js.gripe/api/v1/dquery/${state.user.id}`;
+    els.accountEmail.textContent = state.user.email || state.user.id;
+    els.blockURL.value = state.settings.block_page_url || "";
+    setBlockMode(state.settings.mode || "nxdomain");
+    renderRulesets();
+    renderDomainRules();
+    renderLogs();
+    setStatus(`${copy[lang].connected}: ${state.user.email || state.user.id}`, "ok");
+  } catch (error) {
+    if (error.status === 401 || error.status === 403) { sessionStorage.removeItem("dquery.accountToken"); redirectToLogin(); return; }
+    setStatus(copy[lang].loadFailed, "bad");
+  }
+}
+async function saveBlocking() {
+  const payload = { mode: state.settings.mode || "nxdomain", block_page_url: els.blockURL.value };
+  const result = await api("/settings", { method: "PATCH", body: JSON.stringify(payload) });
+  state.settings = result.settings;
+  setBlockMode(state.settings.mode);
+  setStatus(copy[lang].saved, "ok");
+}
+function setDomainAction(action) {
+  state.domainAction = action;
+  document.querySelectorAll('.segmented[data-control="domain_action"] button').forEach((button) => button.classList.toggle("active", button.dataset.value === action));
+}
+async function saveDomainRule(event) {
+  event.preventDefault();
+  const payload = { domain: els.domainRuleDomain.value, match_type: "domain_suffix", action: state.domainAction };
+  await api("/domain-rules", { method: "POST", body: JSON.stringify(payload) });
+  els.domainRuleDomain.value = "";
+  state.domainRules = (await api("/domain-rules")).rules || [];
+  renderDomainRules();
+  setStatus(copy[lang].saved, "ok");
+}
+async function updateRuleset(id, enabled) {
+  const result = await api(`/rulesets/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) });
+  state.rulesets = state.rulesets.map((set) => set.id === id ? result.ruleset : set);
+  renderRulesets();
+  setStatus(copy[lang].saved, "ok");
+}
+async function deleteDomainRule(id) {
+  await api(`/domain-rules/${id}`, { method: "DELETE" });
+  state.domainRules = (await api("/domain-rules")).rules || [];
+  renderDomainRules();
+}
+async function searchLogs(event) {
+  event.preventDefault();
+  const q = encodeURIComponent(els.logQuery.value.trim());
+  state.logs = (await api(`/logs${q ? `?q=${q}` : ""}`)).logs || [];
+  renderLogs();
+}
+async function clearLogs() {
+  await api("/logs", { method: "DELETE" });
+  state.logs = [];
+  renderLogs();
+  setStatus(copy[lang].logsCleared, "ok");
+}
+
+document.querySelectorAll(".side-nav button").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
+document.querySelectorAll('.segmented[data-control="block_mode"] button').forEach((button) => button.addEventListener("click", () => setBlockMode(button.dataset.value)));
+document.querySelectorAll('.segmented[data-control="domain_action"] button').forEach((button) => button.addEventListener("click", () => setDomainAction(button.dataset.value)));
+document.querySelectorAll("#logout-account, #logout-account-panel").forEach((button) => button.addEventListener("click", signOut));
+els.saveBlocking?.addEventListener("click", saveBlocking);
+els.domainRuleForm?.addEventListener("submit", saveDomainRule);
+els.logForm?.addEventListener("submit", searchLogs);
+els.clearLogs?.addEventListener("click", clearLogs);
+
+loadAll();

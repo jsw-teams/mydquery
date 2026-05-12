@@ -44,8 +44,8 @@ cp -f /opt/dqueryd-src/configs/config.example.yaml /etc/dqueryd/config.yaml
 
 需要按你的环境改的通常是：
 
-- `upstreams.selfhosted_cn_1.url`
-- `upstreams.selfhosted_cn_1.headers.X-Upstream-Key`
+- `DQUERY_HMAC_SECRET` 环境变量，供 `upstreams.alidns_cn_public.hmac` 签名使用
+- `upstreams.alidns_cn_public.url`
 - `upstreams.cloudflare_gateway_global.url`
 - 监听地址与缓存参数
 

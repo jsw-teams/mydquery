@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"gateway-dquery-go/internal/account"
 	"gopkg.in/yaml.v3"
 )
 
@@ -16,6 +17,8 @@ type Config struct {
 	ECS        ECSConfig               `yaml:"ecs"`
 	Cache      CacheConfig             `yaml:"cache"`
 	CNLearning CNLearningConfig        `yaml:"cn_learning"`
+	Account    account.Config          `yaml:"account"`
+	Storage    StorageConfig           `yaml:"storage"`
 	Upstreams  map[string]UpstreamSpec `yaml:"upstreams"`
 }
 
@@ -79,13 +82,26 @@ type CNLearningConfig struct {
 	TTLFloor time.Duration `yaml:"ttl_floor"`
 }
 
+type StorageConfig struct {
+	DBPath string `yaml:"db_path"`
+}
+
 type UpstreamSpec struct {
-	Type        string            `yaml:"type"`
-	URL         string            `yaml:"url"`
-	Method      string            `yaml:"method"`
-	Timeout     time.Duration     `yaml:"timeout"`
-	Headers     map[string]string `yaml:"headers"`
-	HTTPVersion string            `yaml:"http_version"`
+	Type          string            `yaml:"type"`
+	URL           string            `yaml:"url"`
+	Method        string            `yaml:"method"`
+	Timeout       time.Duration     `yaml:"timeout"`
+	Headers       map[string]string `yaml:"headers"`
+	HTTPVersion   string            `yaml:"http_version"`
+	MaxConcurrent int               `yaml:"max_concurrent"`
+	HMAC          UpstreamHMACSpec  `yaml:"hmac"`
+}
+
+type UpstreamHMACSpec struct {
+	Enabled   bool   `yaml:"enabled"`
+	KeyID     string `yaml:"key_id"`
+	Secret    string `yaml:"secret"`
+	SecretEnv string `yaml:"secret_env"`
 }
 
 func Load(path string) (*Config, error) {
@@ -180,6 +196,12 @@ func (c *Config) applyDefaults() {
 	if c.CNLearning.TTLCap == 0 {
 		c.CNLearning.TTLCap = 10 * time.Minute
 	}
+	if c.Account.BaseURL == "" {
+		c.Account.BaseURL = "https://gateway.js.gripe/api/v1/myaccount"
+	}
+	if c.Storage.DBPath == "" {
+		c.Storage.DBPath = "/var/lib/dqueryd/dquery.sqlite3"
+	}
 	for name, up := range c.Upstreams {
 		if up.Method == "" {
 			up.Method = "POST"
@@ -192,6 +214,9 @@ func (c *Config) applyDefaults() {
 		}
 		if up.HTTPVersion == "" {
 			up.HTTPVersion = "auto"
+		}
+		if up.HMAC.Enabled && up.HMAC.SecretEnv == "" {
+			up.HMAC.SecretEnv = "DQUERY_HMAC_SECRET"
 		}
 		c.Upstreams[name] = up
 	}

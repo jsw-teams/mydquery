@@ -4,8 +4,8 @@
     {
       "name": "China domains",
       "route": "cn",
-      "upstream": "hk-hkg.doh.sb",
-      "url": "https://hk-hkg.doh.sb/dns-query"
+      "upstream": "my.jsw.ac.cn",
+      "url": "https://my.jsw.ac.cn/api/v1/dquery-cn"
     },
     {
       "name": "Other domains",

@@ -13,9 +13,9 @@ china_rules:
   compact_json_path: /var/lib/dqueryd/chinamax_classical.compact.json
 
 routing:
-  debug_response_headers: true
+  debug_response_headers: false
   cn:
-    upstream: doh_sb_hk
+    upstream: alidns_cn_public
     fallback_upstream: ""
     ecs_source: none
   global:
@@ -51,19 +51,32 @@ cn_learning:
   ttl_floor: 60s
   ttl_cap: 10m
 
+account:
+  enabled: true
+  base_url: http://127.0.0.1:9100/api/v1/myaccount
+
+storage:
+  db_path: /var/lib/dqueryd/dquery.sqlite3
+
 upstreams:
-  doh_sb_hk:
+  alidns_cn_public:
     type: doh_wire
-    url: https://hk-hkg.doh.sb/dns-query
+    url: https://my.jsw.ac.cn/api/v1/dquery-cn
     method: POST
     http_version: auto
+    max_concurrent: 24
     timeout: 5s
     headers: {}
+    hmac:
+      enabled: true
+      key_id: default
+      secret_env: DQUERY_HMAC_SECRET
 
   cloudflare_gateway_global:
     type: doh_wire
     url: https://gyvpces7ig.cloudflare-gateway.com/dns-query
     method: POST
     http_version: auto
+    max_concurrent: 64
     timeout: 5s
     headers: {}

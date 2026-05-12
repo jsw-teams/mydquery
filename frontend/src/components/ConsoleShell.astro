@@ -1,0 +1,136 @@
+---
+import consoleScript from "../scripts/console-shell.js?url";
+
+const endpoint = "https://gateway.js.gripe/api/v1/dquery";
+---
+
+<section class="pixel-app console-app compact-console" aria-labelledby="console-title" data-i18n-scope="console">
+  <aside class="pixel-sidebar" aria-label="Console navigation">
+    <a class="pixel-brand" href="/">
+      <img src="/media/dquery-console-pixel.png" alt="" width="72" height="72" />
+      <span>dns.js.gripe</span>
+    </a>
+    <nav class="side-nav">
+      <button type="button" class="active" data-view="overview" data-i18n="navOverview">总览</button>
+      <button type="button" data-view="rulesets" data-i18n="navRulesets">规则集</button>
+      <button type="button" data-view="domainRules" data-i18n="navDomainRules">域名规则</button>
+      <button type="button" data-view="blocking" data-i18n="navBlocking">拦截行为</button>
+      <button type="button" data-view="logs" data-i18n="navLogs">查询日志</button>
+      <button type="button" data-view="account" data-i18n="navAccount">账户</button>
+    </nav>
+    <a class="pixel-link" href="/" data-i18n="publicLookup">公共查询</a>
+  </aside>
+
+  <div class="pixel-main">
+    <header class="pixel-header">
+      <div>
+        <p class="pixel-kicker" data-i18n="kicker">账户 DNS</p>
+        <h1 id="console-title" data-i18n="title">个人 DNS 控制台</h1>
+      </div>
+      <div class="console-actions">
+        <button class="pixel-button danger" type="button" id="logout-account" data-i18n="logout">退出账户</button>
+      </div>
+    </header>
+
+    <div class="pixel-alert" id="session-status" role="status">正在检查登录状态...</div>
+
+    <section class="console-view active" data-panel="overview">
+      <div class="pixel-panel endpoint-panel">
+        <h2 data-i18n="endpointTitle">DoH 端点</h2>
+        <div class="endpoint-box endpoint-large">
+          <span data-i18n="personalEndpoint">个人 DoH 入口</span>
+          <code id="personal-endpoint">-</code>
+        </div>
+        <div class="console-summary">
+          <div><span data-i18n="rulesetCount">规则集</span><strong id="metric-rulesets">0</strong></div>
+          <div><span data-i18n="blockMode">拦截模式</span><strong id="metric-block-mode">NXDOMAIN</strong></div>
+          <div><span data-i18n="logWindow">日志保留</span><strong>24h</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="console-view" data-panel="rulesets" hidden>
+      <div class="pixel-panel">
+        <div class="panel-heading">
+          <h2 data-i18n="rulesetsTitle">名单拦截规则集</h2>
+          <span class="panel-note" data-i18n="rulesetNote">平台维护的著名规则集会在启动或超过 1 周后自动同步。</span>
+        </div>
+        <div class="data-list" id="ruleset-list"></div>
+      </div>
+    </section>
+
+    <section class="console-view" data-panel="domainRules" hidden>
+      <div class="pixel-panel">
+        <div class="panel-heading">
+          <h2 data-i18n="domainRulesTitle">域名覆盖规则</h2>
+          <span class="panel-note" data-i18n="domainRulesNote">为单个域名选择跳过规则集或强制拦截。</span>
+        </div>
+        <form class="domain-rule-form focused-form" id="domain-rule-form">
+          <label>
+            <span data-i18n="domainName">域名</span>
+            <input id="domain-rule-domain" autocomplete="off" placeholder="example.com" />
+          </label>
+          <div>
+            <span class="control-label" data-i18n="domainAction">行为</span>
+            <div class="segmented" data-control="domain_action">
+              <button type="button" data-value="allow" class="active" data-i18n="actionAllow">跳过规则集</button>
+              <button type="button" data-value="block" data-i18n="actionBlock">拦截</button>
+            </div>
+          </div>
+          <button class="pixel-button" type="submit" data-i18n="saveDomainRule">保存域名规则</button>
+        </form>
+        <div class="data-list" id="domain-rule-list"></div>
+      </div>
+    </section>
+
+    <section class="console-view" data-panel="blocking" hidden>
+      <div class="pixel-panel">
+        <h2 data-i18n="blockingTitle">拦截行为</h2>
+        <div class="control-band block-control-band">
+          <div>
+            <span class="control-label" data-i18n="blockMode">拦截模式</span>
+            <div class="segmented" data-control="block_mode">
+              <button type="button" data-value="nxdomain" class="active" data-i18n="modeNxdomain">不解析</button>
+              <button type="button" data-value="block_page" data-i18n="modeBlockPage">劫持到拦截页</button>
+            </div>
+          </div>
+          <label class="block-page-field">
+            <span data-i18n="blockPageUrl">自定义拦截页 URL</span>
+            <input id="block-page-url" inputmode="url" autocomplete="off" placeholder="https://example.com/blocked" />
+          </label>
+          <button class="pixel-button" type="button" id="save-blocking" data-i18n="saveBlocking">保存拦截行为</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="console-view" data-panel="logs" hidden>
+      <div class="pixel-panel">
+        <div class="panel-heading">
+          <h2 data-i18n="logsTitle">查询日志</h2>
+          <div class="panel-actions">
+            <span class="panel-note" data-i18n="logsNote">仅保留最近 1 天。</span>
+            <button class="pixel-button danger small" type="button" id="clear-logs" data-i18n="clearLogs">清空日志</button>
+          </div>
+        </div>
+        <form class="log-toolbar" id="log-form">
+          <label>
+            <span data-i18n="logSearch">域名过滤</span>
+            <input id="log-query" autocomplete="off" placeholder="example.com" />
+          </label>
+          <button class="pixel-button" type="submit" data-i18n="searchLogs">查询日志</button>
+        </form>
+        <div class="data-list" id="log-list"></div>
+      </div>
+    </section>
+
+    <section class="console-view" data-panel="account" hidden>
+      <div class="pixel-panel account-panel">
+        <h2 data-i18n="accountTitle">账户</h2>
+        <p id="account-email" class="account-email">-</p>
+        <button class="pixel-button danger" type="button" id="logout-account-panel" data-i18n="logout">退出账户</button>
+      </div>
+    </section>
+  </div>
+</section>
+
+<script src={consoleScript} data-endpoint={endpoint}></script>

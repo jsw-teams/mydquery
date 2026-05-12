@@ -3,6 +3,7 @@ module gateway-dquery-go
 go 1.19
 
 require (
+	github.com/mattn/go-sqlite3 v1.14.16
 	github.com/miekg/dns v1.1.63
 	gopkg.in/yaml.v3 v3.0.1
 )

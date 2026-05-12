@@ -1,0 +1,28 @@
+---
+import loginScript from "../scripts/login-auth.js?url";
+
+const endpoint = "https://gateway.js.gripe/api/v1/dquery";
+const clientId = "dquery";
+---
+
+<main class="login-page pixel-auth" id="main" data-i18n-scope="login">
+  <section class="login-card" aria-labelledby="login-title">
+    <div class="login-art">
+      <img src="/media/dquery-login-pixel-v2.png" alt="" width="220" height="220" />
+    </div>
+    <div class="login-form-panel">
+      <p class="pixel-kicker" data-i18n="kicker">账户 DNS</p>
+      <h1 id="login-title" data-i18n="title">登录个人 DNS 控制台</h1>
+      <p class="login-copy" data-i18n="copy">使用技诉账户完成登录或注册，授权成功后会回到 DNS 控制台。</p>
+      <div class="login-primary-action">
+        <button class="pixel-button" type="button" id="login-button" data-i18n="submit">使用技诉账户登录</button>
+      </div>
+      <div class="pixel-alert" id="login-status" role="status" aria-live="polite"></div>
+      <div class="login-secondary-action">
+        <a class="pixel-link" href="/" data-i18n="back">返回公共查询</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src={loginScript} data-endpoint={endpoint} data-client-id={clientId}></script>

@@ -1,0 +1,17 @@
+---
+import LoginPanel from "../../components/LoginPanel.astro";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+const title = "dns.js.gripe 登录";
+const description = "通过账户中心授权登录 dquery 个人 DNS 控制台。";
+---
+
+<BaseLayout
+  title={title}
+  description={description}
+  lang="zh-CN"
+  canonical="https://dns.js.gripe/login/"
+  alternates={[{ lang: "zh-CN", href: "https://dns.js.gripe/login/" }]}
+>
+  <LoginPanel />
+</BaseLayout>
