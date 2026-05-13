@@ -1,7 +1,7 @@
 ---
 import consoleScript from "../scripts/console-shell.js?url";
 
-const endpoint = "https://gateway.js.gripe/api/v1/dquery";
+const endpoint = import.meta.env.PUBLIC_DQUERY_API_ENDPOINT || "https://gateway.js.gripe/api/v1/dquery";
 ---
 
 <section class="pixel-app console-app compact-console" aria-labelledby="console-title" data-i18n-scope="console">

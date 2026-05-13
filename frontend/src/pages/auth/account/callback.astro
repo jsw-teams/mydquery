@@ -1,0 +1,17 @@
+---
+import LoginPanel from "../../../components/LoginPanel.astro";
+import BaseLayout from "../../../layouts/BaseLayout.astro";
+
+const title = "dns.js.gripe 授权回调";
+const description = "正在完成 dquery 账户授权。";
+---
+
+<BaseLayout
+  title={title}
+  description={description}
+  lang="zh-CN"
+  canonical="https://dns.js.gripe/auth/account/callback"
+  alternates={[{ lang: "zh-CN", href: "https://dns.js.gripe/auth/account/callback" }]}
+>
+  <LoginPanel />
+</BaseLayout>

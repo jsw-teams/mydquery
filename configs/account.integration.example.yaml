@@ -1,0 +1,11 @@
+account:
+  enabled: true
+  client_name: mydquery
+  client_id: "[DQUERY_ACCOUNT_CLIENT_ID]"
+  api_key: "[DQUERY_ACCOUNT_APIKEY]"
+  base_url: "https://gateway.js.gripe/api/v1/myaccount"
+  login_url: "https://account.js.gripe/login"
+  redirect_uri: "https://dns.js.gripe/auth/account/callback"
+  scopes:
+    - accounts:read
+    - identities:resolve

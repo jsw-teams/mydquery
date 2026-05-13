@@ -1,5 +1,5 @@
 const script = document.currentScript;
-const clientId = script?.dataset.clientId || "dquery";
+const endpoint = script?.dataset.endpoint || "https://gateway.js.gripe/api/v1/dquery";
 const lang = navigator.language?.toLowerCase().startsWith("zh") ? "zh" : "en";
 
 const text = {
@@ -10,8 +10,10 @@ const text = {
     submit: "Sign in with JS.Gripe account",
     back: "Back to public lookup",
     failed: "Authorization failed. Please try again.",
+    authorized: "Authorization completed. Returning to the console...",
     cancelled: "Authorization was not completed. Please sign in again.",
     popupBlocked: "Popup was blocked. Please allow popups and try again.",
+    loadingClient: "Loading account application...",
     missingClient: "Missing dquery account client id."
   },
   zh: {
@@ -21,8 +23,10 @@ const text = {
     submit: "使用技诉账户登录",
     back: "返回公共查询",
     failed: "授权失败，请重试。",
+    authorized: "授权已完成，正在返回控制台…",
     cancelled: "未完成授权，请重新登录。",
     popupBlocked: "登录小窗被拦截，请允许弹窗后重试。",
+    loadingClient: "正在加载账户应用信息…",
     missingClient: "缺少 dquery 账户中心 client_id。"
   }
 };
@@ -38,6 +42,7 @@ const params = new URLSearchParams(window.location.search);
 const authChannel = "BroadcastChannel" in window ? new BroadcastChannel("dquery-auth") : null;
 const authResultKey = "dquery.authResult";
 let authCompleted = false;
+let authClient = null;
 
 function setStatus(message, tone = "") {
   if (!status) return;
@@ -58,31 +63,34 @@ function completeCallback() {
     setStatus(text[lang].failed, "bad");
     return;
   }
+  authCompleted = true;
   persistAuthResult(token, returnedState);
   authChannel?.postMessage({ type: "dquery.accountAuthorized", token, state: returnedState });
   if (window.opener && window.opener !== window) {
     window.opener.postMessage({ type: "dquery.accountAuthorized", token, state: returnedState }, window.location.origin);
-    window.close();
+    setStatus(text[lang].authorized, "ok");
+    window.setTimeout(() => window.close(), 120);
     return;
   }
   const expectedState = sessionStorage.getItem("dquery.authState") || "";
-  if (returnedState !== expectedState) {
+  if (expectedState && returnedState !== expectedState) {
     setStatus(text[lang].failed, "bad");
     return;
   }
   sessionStorage.setItem("dquery.accountToken", token);
   sessionStorage.removeItem("dquery.authState");
-  const next = sessionStorage.getItem("dquery.authNext") || "/console/";
+  const next = normalizeInternalPath(sessionStorage.getItem("dquery.authNext") || "/console/");
   sessionStorage.removeItem("dquery.authNext");
-  window.location.replace(next.startsWith("/") ? next : "/console/");
+  window.location.replace(next);
 }
 
 function authorizeURL(state) {
-  const redirectURI = `${window.location.origin}/login/`;
-  const url = new URL("https://account.js.gripe/login");
-  url.searchParams.set("client_id", clientId);
+  const redirectURI = authClient?.redirect_uri || `${window.location.origin}/login/`;
+  const scopes = Array.isArray(authClient?.scopes) && authClient.scopes.length ? authClient.scopes.join(" ") : "accounts:read identities:resolve";
+  const url = new URL(authClient?.login_url || "https://account.js.gripe/login");
+  url.searchParams.set("client_id", authClient.client_id);
   url.searchParams.set("redirect_uri", redirectURI);
-  url.searchParams.set("scope", "accounts:read identities:resolve");
+  url.searchParams.set("scope", scopes);
   url.searchParams.set("state", state);
   url.searchParams.set("prompt", "consent");
   return url;
@@ -123,20 +131,29 @@ function finishAuthorizedSession(token, returnedState) {
   authCompleted = true;
   sessionStorage.setItem("dquery.accountToken", token);
   sessionStorage.removeItem("dquery.authState");
-  const next = sessionStorage.getItem("dquery.authNext") || "/console/";
+  const next = normalizeInternalPath(sessionStorage.getItem("dquery.authNext") || "/console/");
   sessionStorage.removeItem("dquery.authNext");
-  window.location.replace(next.startsWith("/") ? next : "/console/");
+  window.location.replace(next);
+}
+
+function normalizeInternalPath(path) {
+  const fallback = "/console/";
+  if (!path || !path.startsWith("/")) return fallback;
+  const url = new URL(path, window.location.origin);
+  if (url.origin !== window.location.origin) return fallback;
+  if (!url.pathname.endsWith("/")) url.pathname += "/";
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function startAuthorize() {
-  if (!clientId || clientId === "REPLACE_WITH_ACCOUNT_CLIENT_ID") {
+  if (!authClient?.client_id) {
     setStatus(text[lang].missingClient, "bad");
     return;
   }
-  const next = params.get("next") || "/console/";
+  const next = normalizeInternalPath(params.get("next") || "/console/");
   const state = randomState();
   sessionStorage.setItem("dquery.authState", state);
-  sessionStorage.setItem("dquery.authNext", next.startsWith("/") ? next : "/console/");
+  sessionStorage.setItem("dquery.authNext", next);
   const loginWindow = window.open(authorizeURL(state).toString(), "dqueryAccountLogin", "popup=yes,width=520,height=720,menubar=no,toolbar=no,location=yes,status=no,resizable=yes,scrollbars=yes");
   if (!loginWindow) {
     setStatus(text[lang].popupBlocked, "bad");
@@ -168,7 +185,7 @@ function startAuthorize() {
     } catch {
       return;
     }
-    if (!href.startsWith(`${window.location.origin}/login`)) return;
+    if (!href.startsWith(`${window.location.origin}/login`) && !href.startsWith(`${window.location.origin}/auth/account/callback`)) return;
     const callbackURL = new URL(href);
     const token = callbackURL.searchParams.get("account_session") || "";
     const returnedState = callbackURL.searchParams.get("state") || "";
@@ -180,8 +197,32 @@ function startAuthorize() {
   }, 400);
 }
 
+async function loadAuthClient() {
+  if (!button) return;
+  button.disabled = true;
+  setStatus(text[lang].loadingClient, "");
+  try {
+    const response = await fetch(`${endpoint.replace(/\/$/, "")}/account/client`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store"
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result?.client?.client_id) {
+      throw new Error(result?.error || `http_${response.status}`);
+    }
+    authClient = result.client;
+    setStatus("", "");
+    button.disabled = false;
+  } catch {
+    authClient = null;
+    setStatus(text[lang].missingClient, "bad");
+  }
+}
+
 if (params.has("account_session")) {
   completeCallback();
+} else {
+  loadAuthClient();
 }
 
 window.addEventListener("message", (event) => {

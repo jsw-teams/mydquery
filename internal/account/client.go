@@ -11,8 +11,14 @@ import (
 )
 
 type Config struct {
-	Enabled bool   `yaml:"enabled"`
-	BaseURL string `yaml:"base_url"`
+	Enabled      bool     `yaml:"enabled"`
+	ClientName   string   `yaml:"client_name"`
+	ClientID     string   `yaml:"client_id"`
+	APIKey       string   `yaml:"api_key"`
+	BaseURL      string   `yaml:"base_url"`
+	LoginURL     string   `yaml:"login_url"`
+	RedirectURI  string   `yaml:"redirect_uri"`
+	Scopes       []string `yaml:"scopes"`
 }
 
 type User struct {

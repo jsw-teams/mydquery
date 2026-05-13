@@ -2,7 +2,6 @@
 import loginScript from "../scripts/login-auth.js?url";
 
 const endpoint = "https://gateway.js.gripe/api/v1/dquery";
-const clientId = "dquery";
 ---
 
 <main class="login-page pixel-auth" id="main" data-i18n-scope="login">
@@ -25,4 +24,4 @@ const clientId = "dquery";
   </section>
 </main>
 
-<script src={loginScript} data-endpoint={endpoint} data-client-id={clientId}></script>
+<script src={loginScript} data-endpoint={endpoint}></script>

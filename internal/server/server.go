@@ -16,6 +16,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -113,6 +114,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/dquery/", a.handleSubpath)
 	mux.HandleFunc("/api/v1/dquery/healthz", a.handleHealthz)
 	mux.HandleFunc("/api/v1/dquery/readyz", a.handleReadyz)
+	mux.HandleFunc("/api/v1/dquery/account/client", a.handleAccountClient)
 	mux.HandleFunc("/api/v1/dquery/account/me", a.handleAccountMe)
 	return withCommonHeaders(mux)
 }
@@ -123,6 +125,8 @@ func (a *App) handleSubpath(w http.ResponseWriter, r *http.Request) {
 		a.handleHealthz(w, r)
 	case "/api/v1/dquery/readyz":
 		a.handleReadyz(w, r)
+	case "/api/v1/dquery/account/client":
+		a.handleAccountClient(w, r)
 	case "/api/v1/dquery/account/me":
 		a.handleAccountMe(w, r)
 	case "/api/v1/dquery/":
@@ -162,6 +166,45 @@ func (a *App) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		payload["cache"] = a.cache.Stats()
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+func (a *App) handleAccountClient(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method_not_allowed"})
+		return
+	}
+	if !a.cfg.Account.Enabled {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "account_integration_disabled"})
+		return
+	}
+	clientID := strings.TrimSpace(a.cfg.Account.ClientID)
+	loginURL := strings.TrimSpace(a.cfg.Account.LoginURL)
+	redirectURI := strings.TrimSpace(a.cfg.Account.RedirectURI)
+	if loginURL == "" {
+		loginURL = "https://account.js.gripe/login"
+	}
+	if redirectURI == "" {
+		redirectURI = "https://dns.js.gripe/login/"
+	}
+	scopes := a.cfg.Account.Scopes
+	if len(scopes) == 0 {
+		scopes = []string{"accounts:read", "identities:resolve"}
+	}
+	if clientID == "" || strings.EqualFold(clientID, "dquery") || strings.Contains(clientID, "REPLACE") || strings.Contains(clientID, "[") {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "account_client_not_configured"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+		"client": map[string]any{
+			"name":         strings.TrimSpace(a.cfg.Account.ClientName),
+			"client_id":    clientID,
+			"login_url":    loginURL,
+			"redirect_uri": redirectURI,
+			"scopes":       scopes,
+		},
+	})
 }
 
 func (a *App) handleAccountMe(w http.ResponseWriter, r *http.Request) {
@@ -419,6 +462,7 @@ func (a *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) bool {
 	if path == r.URL.Path {
 		return false
 	}
+	writeConsoleCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return true
@@ -467,6 +511,32 @@ func (a *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+func writeConsoleCORS(w http.ResponseWriter, r *http.Request) {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if !isAllowedConsoleOrigin(origin) {
+		return
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Vary", "Origin")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+	w.Header().Set("Access-Control-Max-Age", "600")
+}
+
+func isAllowedConsoleOrigin(origin string) bool {
+	if origin == "https://dns.js.gripe" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	return u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1"
 }
 
 func (a *App) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
@@ -1572,8 +1642,11 @@ func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
 		visitorECS = ""
 	}
 	clientECS, _ := a.extractClientECS(r, &query)
-	routeName, routeCfg := a.pickRoute(qname, time.Now())
+	routeName, routeCfg := a.pickRouteForVisitor(qname, visitorIP, r.Header.Get("CF-IPCountry"), time.Now())
 	selectedECS, selectedSource := ecs.Select(routeCfg.ECSSource, ecs.Candidates{Visitor: visitorECS, Client: clientECS})
+	if routeName == "global" && selectedECS == "" && visitorECS != "" && !isMainlandChinaRequest(visitorIP, r.Header.Get("CF-IPCountry")) {
+		selectedECS, selectedSource = visitorECS, "visitor"
+	}
 
 	cacheKey := ""
 	if a.cache != nil {
@@ -1697,6 +1770,24 @@ func (a *App) pickRoute(qname string, now time.Time) (string, config.RouteConfig
 		return "cn", a.cfg.Routing.CN
 	}
 	return "global", a.cfg.Routing.Global
+}
+
+func (a *App) pickRouteForVisitor(qname, visitorIP, country string, now time.Time) (string, config.RouteConfig) {
+	if isMainlandChinaRequest(visitorIP, country) {
+		return a.pickRoute(qname, now)
+	}
+	return "global", a.cfg.Routing.Global
+}
+
+func isMainlandChinaRequest(visitorIP, country string) bool {
+	if strings.EqualFold(strings.TrimSpace(country), "CN") {
+		return true
+	}
+	ip := net.ParseIP(strings.TrimSpace(visitorIP))
+	if ip == nil {
+		return false
+	}
+	return ip.IsPrivate() || ip.IsLoopback()
 }
 
 func (a *App) resolveWithInflight(ctx context.Context, cacheKey, routeName string, routeCfg config.RouteConfig, query *dns.Msg, queryBytes []byte, selectedECS string) (*doh.Result, string, error) {
@@ -1833,6 +1924,21 @@ type debugHeaders struct{ Route, Upstream, SelectedECS, ECSSource, QName, QType,
 
 func (a *App) writeDNSResponse(w http.ResponseWriter, r *http.Request, status int, payload []byte, ttl time.Duration, dbg debugHeaders) {
 	w.Header().Set("Content-Type", "application/dns-message")
+	if dbg.Route != "" {
+		w.Header().Set("X-DQuery-Route", dbg.Route)
+	}
+	if dbg.Upstream != "" {
+		w.Header().Set("X-DQuery-Upstream", dbg.Upstream)
+	}
+	if dbg.SelectedECS != "" {
+		w.Header().Set("X-DQuery-Selected-ECS", dbg.SelectedECS)
+	}
+	if dbg.ECSSource != "" {
+		w.Header().Set("X-DQuery-ECS-Source", dbg.ECSSource)
+	}
+	if dbg.CacheStatus != "" {
+		w.Header().Set("X-DQuery-Cache", dbg.CacheStatus)
+	}
 	if r.Method == http.MethodGet {
 		w.Header().Set("Cache-Control", buildCacheControl(a.cfg.Cache, ttl))
 	} else {

@@ -42,15 +42,38 @@ async function api(path, options = {}) {
   return payload;
 }
 function setStatus(message, tone = "") { els.status.textContent = message; els.status.dataset.tone = tone; }
-function redirectToLogin() { window.location.replace("/login"); }
-function signOut() { sessionStorage.removeItem("dquery.accountToken"); setStatus(copy[lang].signedOut, "ok"); window.location.replace("/login"); }
+function withTrailingSlash(path) {
+  if (!path.startsWith("/")) return "/login/";
+  if (path.includes("?") || path.includes("#")) {
+    const url = new URL(path, window.location.origin);
+    if (!url.pathname.endsWith("/")) url.pathname += "/";
+    return `${url.pathname}${url.search}${url.hash}`;
+  }
+  return path.endsWith("/") ? path : `${path}/`;
+}
+function redirectToLogin() { window.location.replace(withTrailingSlash("/login")); }
+function signOut() { sessionStorage.removeItem("dquery.accountToken"); setStatus(copy[lang].signedOut, "ok"); window.location.replace(withTrailingSlash("/login")); }
 function empty(text) { const node = document.createElement("div"); node.className = "empty-state"; node.textContent = text; return node; }
 function item(label, meta, chip) { const row = document.createElement("div"); row.className = "data-item"; row.innerHTML = "<div><strong></strong><span></span></div><em></em>"; row.querySelector("strong").textContent = label; row.querySelector("span").textContent = meta; row.querySelector("em").textContent = chip; return row; }
 function modeLabel(mode) { return mode === "block_page" ? copy[lang].modeBlockPage : copy[lang].modeNxdomain; }
 
 function showView(view) {
-  document.querySelectorAll(".side-nav button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  document.querySelectorAll(".console-view").forEach((panel) => { const active = panel.dataset.panel === view; panel.classList.toggle("active", active); panel.hidden = !active; });
+  const panels = Array.from(document.querySelectorAll(".console-view"));
+  const target = panels.some((panel) => panel.dataset.panel === view) ? view : "overview";
+  document.querySelectorAll(".side-nav button").forEach((button) => {
+    const active = button.dataset.view === target;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  panels.forEach((panel) => {
+    const active = panel.dataset.panel === target;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+    panel.style.display = active ? "grid" : "none";
+  });
+  if (window.location.hash !== `#${target}`) {
+    window.history.replaceState({}, "", `#${target}`);
+  }
 }
 function setBlockMode(mode) {
   state.settings.mode = mode;
@@ -179,4 +202,5 @@ els.domainRuleForm?.addEventListener("submit", saveDomainRule);
 els.logForm?.addEventListener("submit", searchLogs);
 els.clearLogs?.addEventListener("click", clearLogs);
 
+showView(window.location.hash.replace("#", "") || "overview");
 loadAll();

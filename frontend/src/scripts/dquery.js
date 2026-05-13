@@ -173,7 +173,122 @@ function parseIPv6(view, offset) {
   return parts.join(":");
 }
 
+function bytesAt(view, offset, length) {
+  return new Uint8Array(view.buffer, view.byteOffset + offset, length);
+}
+
+function hexBytes(bytes) {
+  return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function base64Bytes(bytes) {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+function svcParamKeyName(key) {
+  return {
+    0: "mandatory",
+    1: "alpn",
+    2: "no-default-alpn",
+    3: "port",
+    4: "ipv4hint",
+    5: "ech",
+    6: "ipv6hint",
+    7: "dohpath",
+    8: "ohttp"
+  }[key] || `key${key}`;
+}
+
+function parseSVCBParam(view, key, offset, length) {
+  const bytes = bytesAt(view, offset, length);
+  if (key === 0) {
+    const values = [];
+    for (let cursor = offset; cursor + 1 < offset + length; cursor += 2) {
+      values.push(svcParamKeyName(view.getUint16(cursor)));
+    }
+    return values.join(",");
+  }
+  if (key === 1) {
+    const values = [];
+    let cursor = offset;
+    const end = offset + length;
+    while (cursor < end) {
+      const partLength = view.getUint8(cursor);
+      cursor += 1;
+      values.push(new TextDecoder().decode(bytesAt(view, cursor, partLength)));
+      cursor += partLength;
+    }
+    return values.join(",");
+  }
+  if (key === 2 || key === 8) {
+    return "";
+  }
+  if (key === 3 && length === 2) {
+    return String(view.getUint16(offset));
+  }
+  if (key === 4 && length % 4 === 0) {
+    const values = [];
+    for (let cursor = offset; cursor < offset + length; cursor += 4) {
+      values.push(Array.from(bytesAt(view, cursor, 4)).join("."));
+    }
+    return values.join(",");
+  }
+  if (key === 5) {
+    return base64Bytes(bytes);
+  }
+  if (key === 6 && length % 16 === 0) {
+    const values = [];
+    for (let cursor = offset; cursor < offset + length; cursor += 16) {
+      values.push(parseIPv6(view, cursor));
+    }
+    return values.join(",");
+  }
+  if (key === 7) {
+    return new TextDecoder().decode(bytes);
+  }
+  return `0x${hexBytes(bytes)}`;
+}
+
+function quoteSVCBValue(value) {
+  if (!value) {
+    return "";
+  }
+  return /^[A-Za-z0-9.,:_/@%+-]+$/.test(value) ? value : JSON.stringify(value);
+}
+
+function parseSVCB(view, offset, length) {
+  const end = offset + length;
+  if (length < 3) {
+    throw new Error("invalid_svcb_rdata");
+  }
+  const priority = view.getUint16(offset);
+  const target = readName(view, offset + 2);
+  const parts = [`${priority}`, target.name];
+  let cursor = target.offset;
+  while (cursor < end) {
+    if (cursor + 4 > end) {
+      throw new Error("invalid_svcb_param");
+    }
+    const key = view.getUint16(cursor);
+    const paramLength = view.getUint16(cursor + 2);
+    cursor += 4;
+    if (cursor + paramLength > end) {
+      throw new Error("invalid_svcb_param");
+    }
+    const name = svcParamKeyName(key);
+    const value = parseSVCBParam(view, key, cursor, paramLength);
+    parts.push(value ? `${name}=${quoteSVCBValue(value)}` : name);
+    cursor += paramLength;
+  }
+  return parts.join(" ");
+}
+
 function parseRdata(view, type, offset, length) {
+  const end = offset + length;
   if (type === typeCodes.A && length === 4) {
     return Array.from(new Uint8Array(view.buffer, view.byteOffset + offset, length)).join(".");
   }
@@ -186,10 +301,59 @@ function parseRdata(view, type, offset, length) {
   if (type === typeCodes.MX) {
     return `${view.getUint16(offset)} ${readName(view, offset + 2).name}`;
   }
+  if (type === typeCodes.SOA) {
+    const mname = readName(view, offset);
+    const rname = readName(view, mname.offset);
+    const cursor = rname.offset;
+    if (cursor + 20 > end) {
+      throw new Error("invalid_soa_rdata");
+    }
+    const values = [
+      view.getUint32(cursor),
+      view.getUint32(cursor + 4),
+      view.getUint32(cursor + 8),
+      view.getUint32(cursor + 12),
+      view.getUint32(cursor + 16)
+    ];
+    return `${mname.name} ${rname.name} ${values.join(" ")}`;
+  }
+  if (type === typeCodes.SRV) {
+    if (length < 7) {
+      throw new Error("invalid_srv_rdata");
+    }
+    return `${view.getUint16(offset)} ${view.getUint16(offset + 2)} ${view.getUint16(offset + 4)} ${readName(view, offset + 6).name}`;
+  }
+  if (type === typeCodes.CAA) {
+    if (length < 2) {
+      throw new Error("invalid_caa_rdata");
+    }
+    const flags = view.getUint8(offset);
+    const tagLength = view.getUint8(offset + 1);
+    if (offset + 2 + tagLength > end) {
+      throw new Error("invalid_caa_rdata");
+    }
+    const tag = new TextDecoder().decode(new Uint8Array(view.buffer, view.byteOffset + offset + 2, tagLength));
+    const value = new TextDecoder().decode(new Uint8Array(view.buffer, view.byteOffset + offset + 2 + tagLength, end - offset - 2 - tagLength));
+    return `${flags} ${tag} "${value}"`;
+  }
+  if (type === typeCodes.DS) {
+    if (length < 4) {
+      throw new Error("invalid_ds_rdata");
+    }
+    return `${view.getUint16(offset)} ${view.getUint8(offset + 2)} ${view.getUint8(offset + 3)} ${hexBytes(bytesAt(view, offset + 4, length - 4)).toUpperCase()}`;
+  }
+  if (type === typeCodes.DNSKEY) {
+    if (length < 4) {
+      throw new Error("invalid_dnskey_rdata");
+    }
+    return `${view.getUint16(offset)} ${view.getUint8(offset + 2)} ${view.getUint8(offset + 3)} ${base64Bytes(bytesAt(view, offset + 4, length - 4))}`;
+  }
+  if (type === typeCodes.SVCB || type === typeCodes.HTTPS) {
+    return parseSVCB(view, offset, length);
+  }
   if (type === typeCodes.TXT) {
     const chunks = [];
     let cursor = offset;
-    const end = offset + length;
     while (cursor < end) {
       const chunkLength = view.getUint8(cursor);
       cursor += 1;
@@ -199,9 +363,7 @@ function parseRdata(view, type, offset, length) {
     }
     return chunks.join(" ");
   }
-  return Array.from(new Uint8Array(view.buffer, view.byteOffset + offset, length))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  return hexBytes(bytesAt(view, offset, length));
 }
 
 function parseRecords(view, count, offset) {
@@ -283,7 +445,15 @@ async function resolveName(name, type) {
     const message = await response.text();
     throw new Error(message || `HTTP ${response.status}`);
   }
-  return parseResponse(await response.arrayBuffer());
+  const payload = parseResponse(await response.arrayBuffer());
+  payload.DQuery = {
+    route: response.headers.get("x-dquery-route") || "",
+    upstream: response.headers.get("x-dquery-upstream") || "",
+    ecs: response.headers.get("x-dquery-selected-ecs") || "",
+    ecsSource: response.headers.get("x-dquery-ecs-source") || "",
+    cache: response.headers.get("x-dquery-cache") || ""
+  };
+  return payload;
 }
 
 function syncUrl(name, type) {
