@@ -95,8 +95,8 @@ const endpoint = import.meta.env.PUBLIC_DQUERY_API_ENDPOINT || "https://gateway.
             </div>
           </div>
           <label class="block-page-field">
-            <span data-i18n="blockPageUrl">自定义拦截页 URL</span>
-            <input id="block-page-url" inputmode="url" autocomplete="off" placeholder="https://example.com/blocked" />
+            <span data-i18n="blockPageUrl">拦截目标 CNAME / IP</span>
+            <input id="block-page-url" inputmode="url" autocomplete="off" placeholder="safeguard.js.gripe 或 192.0.2.10" />
           </label>
           <button class="pixel-button" type="button" id="save-blocking" data-i18n="saveBlocking">保存拦截行为</button>
         </div>
@@ -131,6 +131,7 @@ const endpoint = import.meta.env.PUBLIC_DQUERY_API_ENDPOINT || "https://gateway.
       </div>
     </section>
   </div>
+  <div class="pixel-toast" id="console-toast" role="status" aria-live="polite"></div>
 </section>
 
 <script src={consoleScript} data-endpoint={endpoint}></script>

@@ -9,7 +9,7 @@ const copy = {
     endpointTitle: "DoH endpoint", personalEndpoint: "Personal DoH endpoint", rulesetCount: "Rule sets", blockMode: "Blocking mode", logWindow: "Log retention",
     rulesetsTitle: "Blocklist rule sets", rulesetNote: "Known rule sets are managed by the platform. Choose which lists are active for your DNS endpoint.", enableRuleset: "Enable", disableRuleset: "Disable",
     domainRulesTitle: "Domain override rules", domainRulesNote: "Choose whether a domain skips the rule sets or is blocked.", domainName: "Domain", domainAction: "Action", actionAllow: "Skip rule sets", actionBlock: "Block", saveDomainRule: "Save domain rule", deleteRule: "Delete",
-    blockingTitle: "Blocking behavior", modeNxdomain: "Do not resolve", modeBlockPage: "Hijack to block page", blockPageUrl: "Custom block page URL", saveBlocking: "Save behavior",
+    blockingTitle: "Blocking behavior", modeNxdomain: "Do not resolve", modeBlockPage: "Redirect to target", blockPageUrl: "Block target CNAME / IP", saveBlocking: "Save behavior",
     logsTitle: "Query logs", logsNote: "Only the most recent 24 hours are retained.", logSearch: "Domain filter", searchLogs: "Search logs", clearLogs: "Clear logs", accountTitle: "Account",
     enabled: "Enabled", disabled: "Disabled", pending: "Pending", synced: "Synced", error: "Sync error", connected: "Connected", saved: "Saved", logsCleared: "Logs cleared", signedOut: "Signed out", loadFailed: "Connection failed. Please check network or CORS settings.", emptySets: "No known rule sets are available.", emptyDomainRules: "No domain override rules yet.", emptyLogs: "No query logs in the last 24 hours."
   },
@@ -19,7 +19,7 @@ const copy = {
     endpointTitle: "DoH 端点", personalEndpoint: "个人 DoH 入口", rulesetCount: "规则集", blockMode: "拦截模式", logWindow: "日志保留",
     rulesetsTitle: "名单拦截规则集", rulesetNote: "著名规则集由平台维护。你可以选择哪些规则集对个人 DNS 生效。", enableRuleset: "启用", disableRuleset: "禁用",
     domainRulesTitle: "域名覆盖规则", domainRulesNote: "为域名选择跳过规则集规则或直接拦截。", domainName: "域名", domainAction: "行为", actionAllow: "跳过规则集", actionBlock: "拦截", saveDomainRule: "保存域名规则", deleteRule: "删除",
-    blockingTitle: "拦截行为", modeNxdomain: "不解析", modeBlockPage: "劫持到拦截页", blockPageUrl: "自定义拦截页 URL", saveBlocking: "保存拦截行为",
+    blockingTitle: "拦截行为", modeNxdomain: "不解析", modeBlockPage: "定向到目标", blockPageUrl: "拦截目标 CNAME / IP", saveBlocking: "保存拦截行为",
     logsTitle: "查询日志", logsNote: "仅保留最近 1 天。", logSearch: "域名过滤", searchLogs: "查询日志", clearLogs: "清空日志", accountTitle: "账户",
     enabled: "已启用", disabled: "已禁用", pending: "待同步", synced: "已同步", error: "同步异常", connected: "已连接", saved: "已保存", logsCleared: "日志已清空", signedOut: "已退出", loadFailed: "连接失败，请检查网络或 CORS 设置。", emptySets: "暂无可用著名规则集。", emptyDomainRules: "还没有域名覆盖规则。", emptyLogs: "最近 1 天没有查询日志。"
   }
@@ -29,7 +29,7 @@ const state = { token: sessionStorage.getItem("dquery.accountToken") || "", user
 const els = {
   status: document.querySelector("#session-status"), endpoint: document.querySelector("#personal-endpoint"), metricRulesets: document.querySelector("#metric-rulesets"), metricBlockMode: document.querySelector("#metric-block-mode"),
   rulesetList: document.querySelector("#ruleset-list"), domainRuleForm: document.querySelector("#domain-rule-form"), domainRuleDomain: document.querySelector("#domain-rule-domain"), domainRuleList: document.querySelector("#domain-rule-list"),
-  blockURL: document.querySelector("#block-page-url"), saveBlocking: document.querySelector("#save-blocking"), logForm: document.querySelector("#log-form"), logQuery: document.querySelector("#log-query"), clearLogs: document.querySelector("#clear-logs"), logList: document.querySelector("#log-list"), accountEmail: document.querySelector("#account-email")
+  blockURL: document.querySelector("#block-page-url"), saveBlocking: document.querySelector("#save-blocking"), logForm: document.querySelector("#log-form"), logQuery: document.querySelector("#log-query"), clearLogs: document.querySelector("#clear-logs"), logList: document.querySelector("#log-list"), accountEmail: document.querySelector("#account-email"), toast: document.querySelector("#console-toast")
 };
 
 document.querySelectorAll("[data-i18n]").forEach((node) => { const value = copy[lang][node.dataset.i18n]; if (value) node.textContent = value; });
@@ -42,6 +42,14 @@ async function api(path, options = {}) {
   return payload;
 }
 function setStatus(message, tone = "") { els.status.textContent = message; els.status.dataset.tone = tone; }
+function showToast(message, tone = "ok") {
+  if (!els.toast) return;
+  window.clearTimeout(showToast.timer);
+  els.toast.textContent = message;
+  els.toast.dataset.tone = tone;
+  els.toast.classList.add("show");
+  showToast.timer = window.setTimeout(() => els.toast.classList.remove("show"), 2600);
+}
 function withTrailingSlash(path) {
   if (!path.startsWith("/")) return "/login/";
   if (path.includes("?") || path.includes("#")) {
@@ -155,6 +163,7 @@ async function saveBlocking() {
   state.settings = result.settings;
   setBlockMode(state.settings.mode);
   setStatus(copy[lang].saved, "ok");
+  showToast(copy[lang].saved);
 }
 function setDomainAction(action) {
   state.domainAction = action;
@@ -168,17 +177,20 @@ async function saveDomainRule(event) {
   state.domainRules = (await api("/domain-rules")).rules || [];
   renderDomainRules();
   setStatus(copy[lang].saved, "ok");
+  showToast(copy[lang].saved);
 }
 async function updateRuleset(id, enabled) {
   const result = await api(`/rulesets/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) });
   state.rulesets = state.rulesets.map((set) => set.id === id ? result.ruleset : set);
   renderRulesets();
   setStatus(copy[lang].saved, "ok");
+  showToast(copy[lang].saved);
 }
 async function deleteDomainRule(id) {
   await api(`/domain-rules/${id}`, { method: "DELETE" });
   state.domainRules = (await api("/domain-rules")).rules || [];
   renderDomainRules();
+  showToast(copy[lang].saved);
 }
 async function searchLogs(event) {
   event.preventDefault();
@@ -191,6 +203,7 @@ async function clearLogs() {
   state.logs = [];
   renderLogs();
   setStatus(copy[lang].logsCleared, "ok");
+  showToast(copy[lang].logsCleared);
 }
 
 document.querySelectorAll(".side-nav button").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));

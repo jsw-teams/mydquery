@@ -684,9 +684,11 @@ func (a *App) handleUpdateSettings(w http.ResponseWriter, r *http.Request, user 
 		BlockPageURL: strings.TrimSpace(in.BlockPageURL),
 		UpdatedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
-	if settings.Mode == "block_page" && !(strings.HasPrefix(settings.BlockPageURL, "https://") || strings.HasPrefix(settings.BlockPageURL, "http://")) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_block_page_url"})
-		return
+	if settings.Mode == "block_page" {
+		if _, ok := blockPageDNSTarget(settings.BlockPageURL); !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_block_page_target"})
+			return
+		}
 	}
 	if err := a.store.upsertBlockSettings(settings); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage_error"})
@@ -1624,12 +1626,18 @@ func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
 		if action, ok := a.store.domainActionFor(personalOwnerID, qname); ok {
 			if action.Action == "block" {
 				response := nxdomainResponse(&query)
+				if blockResponse, ok := a.blockPageResponse(r.Context(), personalOwnerID, &query); ok {
+					response = blockResponse
+				}
 				a.logPersonalQuery(personalOwnerID, qname, qtype, "block_domain_rule", "", a.extractClientIP(r))
 				a.writeDNSResponse(w, r, http.StatusOK, response, 60, debugHeaders{QName: qname, QType: qtype, CacheStatus: "BYPASS"})
 				return
 			}
 		} else if setName, ok := a.store.knownRuleSetMatch(personalOwnerID, qname); ok {
 			response := nxdomainResponse(&query)
+			if blockResponse, ok := a.blockPageResponse(r.Context(), personalOwnerID, &query); ok {
+				response = blockResponse
+			}
 			a.logPersonalQuery(personalOwnerID, qname, qtype, "block_ruleset", setName, a.extractClientIP(r))
 			a.writeDNSResponse(w, r, http.StatusOK, response, 60, debugHeaders{QName: qname, QType: qtype, CacheStatus: "BYPASS"})
 			return
@@ -1720,6 +1728,117 @@ func nxdomainResponse(query *dns.Msg) []byte {
 		return []byte{}
 	}
 	return packed
+}
+
+func (a *App) blockPageResponse(ctx context.Context, ownerID string, query *dns.Msg) ([]byte, bool) {
+	settings, err := a.store.getBlockSettings(ownerID)
+	if err != nil || settings.Mode != "block_page" {
+		return nil, false
+	}
+	target, ok := blockPageDNSTarget(settings.BlockPageURL)
+	if !ok {
+		return nil, false
+	}
+	return dnsRedirectResponse(ctx, query, target), true
+}
+
+func blockPageDNSTarget(rawURL string) (string, bool) {
+	value := strings.TrimSpace(rawURL)
+	if value == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", false
+	}
+	host := parsed.Hostname()
+	if parsed.Scheme == "" {
+		parsed, err = url.Parse("//" + value)
+		if err != nil {
+			return "", false
+		}
+		host = parsed.Hostname()
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "" {
+		return "", false
+	}
+	if _, ok := dns.IsDomainName(dns.Fqdn(host)); net.ParseIP(host) == nil && !ok {
+		return "", false
+	}
+	return host, true
+}
+
+func dnsRedirectResponse(ctx context.Context, query *dns.Msg, target string) []byte {
+	var response dns.Msg
+	response.SetReply(query)
+	response.Rcode = dns.RcodeSuccess
+	response.Authoritative = false
+	if len(query.Question) == 0 {
+		packed, _ := response.Pack()
+		return packed
+	}
+	question := query.Question[0]
+	ttl := uint32(60)
+	targetIP := net.ParseIP(target)
+	if targetIP != nil {
+		switch question.Qtype {
+		case dns.TypeA:
+			if ip4 := targetIP.To4(); ip4 != nil {
+				response.Answer = append(response.Answer, &dns.A{
+					Hdr: dns.RR_Header{Name: question.Name, Rrtype: dns.TypeA, Class: question.Qclass, Ttl: ttl},
+					A:   ip4,
+				})
+			}
+		case dns.TypeAAAA:
+			if ip16 := targetIP.To16(); ip16 != nil && targetIP.To4() == nil {
+				response.Answer = append(response.Answer, &dns.AAAA{
+					Hdr:  dns.RR_Header{Name: question.Name, Rrtype: dns.TypeAAAA, Class: question.Qclass, Ttl: ttl},
+					AAAA: ip16,
+				})
+			}
+		}
+	} else {
+		targetName := dns.Fqdn(target)
+		response.Answer = append(response.Answer, &dns.CNAME{
+			Hdr:    dns.RR_Header{Name: question.Name, Rrtype: dns.TypeCNAME, Class: question.Qclass, Ttl: ttl},
+			Target: targetName,
+		})
+		if question.Qtype == dns.TypeA || question.Qtype == dns.TypeAAAA {
+			lookupCtx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+			defer cancel()
+			for _, ip := range lookupRedirectTargetIPs(lookupCtx, target) {
+				if question.Qtype == dns.TypeA {
+					if ip4 := ip.To4(); ip4 != nil {
+						response.Answer = append(response.Answer, &dns.A{
+							Hdr: dns.RR_Header{Name: targetName, Rrtype: dns.TypeA, Class: question.Qclass, Ttl: ttl},
+							A:   ip4,
+						})
+					}
+					continue
+				}
+				if ip16 := ip.To16(); ip16 != nil && ip.To4() == nil {
+					response.Answer = append(response.Answer, &dns.AAAA{
+						Hdr:  dns.RR_Header{Name: targetName, Rrtype: dns.TypeAAAA, Class: question.Qclass, Ttl: ttl},
+						AAAA: ip16,
+					})
+				}
+			}
+		}
+	}
+	packed, err := response.Pack()
+	if err != nil {
+		return []byte{}
+	}
+	return packed
+}
+
+func lookupRedirectTargetIPs(ctx context.Context, target string) []net.IP {
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", target)
+	if err != nil {
+		return nil
+	}
+	return ips
 }
 
 func isPersonalDoHPath(path string) bool {
