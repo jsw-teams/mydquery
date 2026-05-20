@@ -36,7 +36,7 @@ document.querySelectorAll("[data-i18n]").forEach((node) => { const value = copy[
 
 function authHeaders() { return state.token ? { Authorization: `Bearer ${state.token}` } : {}; }
 async function api(path, options = {}) {
-  const response = await fetch(`${apiBase}${path}`, { ...options, headers: { Accept: "application/json", "Content-Type": "application/json", ...authHeaders(), ...(options.headers || {}) }, cache: "no-store" });
+  const response = await fetch(`${apiBase}${path}`, { ...options, credentials: "include", headers: { Accept: "application/json", "Content-Type": "application/json", ...authHeaders(), ...(options.headers || {}) }, cache: "no-store" });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) { const error = new Error(payload.error || `HTTP ${response.status}`); error.status = response.status; throw error; }
   return payload;
@@ -60,7 +60,16 @@ function withTrailingSlash(path) {
   return path.endsWith("/") ? path : `${path}/`;
 }
 function redirectToLogin() { window.location.replace(withTrailingSlash("/login")); }
-function signOut() { sessionStorage.removeItem("dquery.accountToken"); setStatus(copy[lang].signedOut, "ok"); window.location.replace(withTrailingSlash("/login")); }
+async function signOut() {
+  sessionStorage.removeItem("dquery.accountToken");
+  try {
+    await api("/logout", { method: "POST" });
+  } catch {
+    // Local cleanup still wins if the network is already gone.
+  }
+  setStatus(copy[lang].signedOut, "ok");
+  window.location.replace(withTrailingSlash("/login"));
+}
 function empty(text) { const node = document.createElement("div"); node.className = "empty-state"; node.textContent = text; return node; }
 function item(label, meta, chip) { const row = document.createElement("div"); row.className = "data-item"; row.innerHTML = "<div><strong></strong><span></span></div><em></em>"; row.querySelector("strong").textContent = label; row.querySelector("span").textContent = meta; row.querySelector("em").textContent = chip; return row; }
 function modeLabel(mode) { return mode === "block_page" ? copy[lang].modeBlockPage : copy[lang].modeNxdomain; }
@@ -136,7 +145,6 @@ function renderLogs() {
   for (const entry of state.logs) els.logList.append(item(`${entry.qname} / ${entry.qtype}`, entry.created_at, entry.action));
 }
 async function loadAll() {
-  if (!state.token) { redirectToLogin(); return; }
   try {
     const [session, settings, rulesets, domainRules, logs] = await Promise.all([api("/session"), api("/settings"), api("/rulesets"), api("/domain-rules"), api("/logs")]);
     state.user = session.user;
