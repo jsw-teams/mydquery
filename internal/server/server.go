@@ -110,6 +110,8 @@ func New(cfg *config.Config, rules *chinarules.Store, resolver *doh.Resolver) (*
 
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/account/start", a.handleAuthStart)
+	mux.HandleFunc("/auth/account/callback", a.handleAuthCallback)
 	mux.HandleFunc("/api/v1/dquery", a.handleDoH)
 	mux.HandleFunc("/api/v1/dquery/", a.handleSubpath)
 	mux.HandleFunc("/api/v1/dquery/healthz", a.handleHealthz)
@@ -239,9 +241,134 @@ func (a *App) handleAccountMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method_not_allowed"})
+		return
+	}
+	if !a.cfg.Account.Enabled {
+		http.Redirect(w, r, "/login?error=account_disabled", http.StatusFound)
+		return
+	}
+	clientID := strings.TrimSpace(a.cfg.Account.ClientID)
+	if clientID == "" || strings.Contains(clientID, "[") || strings.Contains(clientID, "REPLACE") {
+		http.Redirect(w, r, "/login?error=account_client_not_configured", http.StatusFound)
+		return
+	}
+	loginURL := strings.TrimSpace(a.cfg.Account.LoginURL)
+	if loginURL == "" {
+		loginURL = "https://account.js.gripe/login"
+	}
+	redirectURI := strings.TrimSpace(a.cfg.Account.RedirectURI)
+	if redirectURI == "" {
+		redirectURI = requestOrigin(r) + "/auth/account/callback"
+	}
+	scopes := a.cfg.Account.Scopes
+	if len(scopes) == 0 {
+		scopes = []string{"accounts:read", "identities:resolve"}
+	}
+	state := "st_" + randomHex(16)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "dquery_oauth_state",
+		Value:    state,
+		Path:     "/auth/account",
+		MaxAge:   600,
+		HttpOnly: true,
+		Secure:   secureCookie(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+	u, err := url.Parse(loginURL)
+	if err != nil {
+		http.Redirect(w, r, "/login?error=bad_login_url", http.StatusFound)
+		return
+	}
+	q := u.Query()
+	q.Set("client_id", clientID)
+	q.Set("redirect_uri", redirectURI)
+	q.Set("scope", strings.Join(scopes, " "))
+	q.Set("state", state)
+	q.Set("prompt", "consent")
+	if r.URL.Query().Get("popup") == "1" {
+		q.Set("popup", "1")
+	}
+	u.RawQuery = q.Encode()
+	http.Redirect(w, r, u.String(), http.StatusFound)
+}
+
+func (a *App) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method_not_allowed"})
+		return
+	}
+	if errCode := r.URL.Query().Get("error"); errCode != "" {
+		a.popupHTML(w, false, "/login?error=auth_failed", "账户授权未完成")
+		return
+	}
+	state := r.URL.Query().Get("state")
+	c, err := r.Cookie("dquery_oauth_state")
+	if err != nil || c.Value == "" || state == "" || c.Value != state {
+		a.popupHTML(w, false, "/login?error=state", "登录状态校验失败，请重新打开登录窗口")
+		return
+	}
+	accountSession := r.URL.Query().Get("account_session")
+	if accountSession == "" {
+		a.popupHTML(w, false, "/login?error=no_session", "账户中心未返回有效登录状态")
+		return
+	}
+	user, err := a.account.Me(r.Context(), accountSession)
+	if err != nil {
+		a.popupHTML(w, false, "/login?error=account_error", "统一账户校验失败，请稍后重试")
+		return
+	}
+	if user.UserType == "" {
+		user.UserType = user.Role
+	}
+	a.store.ensureDefaultProfile(user)
+	if err := a.createSession(w, r, user); err != nil {
+		a.popupHTML(w, false, "/login?error=session", "DNS 控制台会话创建失败")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "dquery_oauth_state",
+		Value:    "",
+		Path:     "/auth/account",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   secureCookie(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+	a.popupHTML(w, true, "/console/", "登录成功")
+}
+
+func (a *App) popupHTML(w http.ResponseWriter, ok bool, redirectTo, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	status := "error"
+	if ok {
+		status = "ok"
+	}
+	encMsg, _ := json.Marshal(message)
+	encTo, _ := json.Marshal(redirectTo)
+	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>dquery login</title><body>
+<script>
+const payload={source:"dquery-auth",status:%q,message:%s,redirectTo:%s};
+try{ if(window.opener){ window.opener.postMessage(payload, window.location.origin); window.close(); } else { location.href=payload.redirectTo; } }
+catch(e){ location.href=payload.redirectTo; }
+</script>
+<p>%s</p></body>`, status, encMsg, encTo, message)
+}
+
 type accountStore struct {
 	mu sync.Mutex
 	db *sql.DB
+}
+
+type accountSession struct {
+	ID        string
+	User      account.User
+	ExpiresAt time.Time
 }
 
 type dnsProfile struct {
@@ -444,6 +571,21 @@ func (s *accountStore) migrate() error {
 			updated_at TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_dns_domain_actions_owner ON dns_domain_actions(owner_user_id, enabled, domain)`,
+		`CREATE TABLE IF NOT EXISTS account_sessions (
+			id TEXT PRIMARY KEY,
+			session_hash TEXT NOT NULL UNIQUE,
+			account_user_id TEXT NOT NULL,
+			email TEXT NOT NULL DEFAULT '',
+			display_name TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT '',
+			user_type TEXT NOT NULL DEFAULT '',
+			capabilities_json TEXT NOT NULL DEFAULT '{}',
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_account_sessions_hash ON account_sessions(session_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_account_sessions_expires ON account_sessions(expires_at)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
@@ -469,6 +611,11 @@ func (a *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) bool {
 	}
 	if path == "/auth/login" && r.Method == http.MethodPost {
 		a.handleAccountLogin(w, r)
+		return true
+	}
+	if path == "/logout" && r.Method == http.MethodPost {
+		a.clearSession(w, r)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return true
 	}
 	if path != "/session" && path != "/settings" && path != "/rulesets" && path != "/domain-rules" && path != "/profiles" && path != "/logs" && !strings.HasPrefix(path, "/rulesets/") && !strings.HasPrefix(path, "/domain-rules/") && !strings.HasPrefix(path, "/profiles/") {
@@ -522,6 +669,7 @@ func writeConsoleCORS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Vary", "Origin")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
 	w.Header().Set("Access-Control-Max-Age", "600")
 }
 
@@ -582,6 +730,9 @@ func (a *App) requireAccountUser(w http.ResponseWriter, r *http.Request) (accoun
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "account_integration_disabled"})
 		return zero, false
 	}
+	if session, err := a.readSession(r); err == nil {
+		return session.User, true
+	}
 	user, err := a.account.Me(r.Context(), account.BearerToken(r))
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
@@ -599,6 +750,42 @@ func (a *App) requireAccountUser(w http.ResponseWriter, r *http.Request) (accoun
 		return zero, false
 	}
 	return user, true
+}
+
+func hashSession(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+func secureCookie(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func sharedCookieDomain(r *http.Request) string {
+	host := r.Host
+	if idx := strings.Index(host, ":"); idx >= 0 {
+		host = host[:idx]
+	}
+	if host == "dns.js.gripe" || host == "gateway.js.gripe" {
+		return ".js.gripe"
+	}
+	return ""
+}
+
+func requestOrigin(r *http.Request) string {
+	proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	if proto == "" {
+		if r.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
+	}
+	host := r.Host
+	if host == "" {
+		host = "dns.js.gripe"
+	}
+	return proto + "://" + host
 }
 
 func (s *accountStore) ensureDefaultProfile(user account.User) {
@@ -621,6 +808,77 @@ func (s *accountStore) ensureDefaultProfile(user account.User) {
 	}
 	_, _ = s.db.Exec(`INSERT INTO dns_profiles (id, owner_user_id, name, enabled, default_route, default_upstream_policy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		profile.ID, profile.OwnerUserID, profile.Name, boolInt(profile.Enabled), profile.DefaultRoute, profile.DefaultUpstreamPolicy, profile.CreatedAt, profile.UpdatedAt)
+}
+
+func (a *App) createSession(w http.ResponseWriter, r *http.Request, user account.User) error {
+	now := time.Now().UTC()
+	raw := "ses_" + randomHex(24)
+	ttl := 168 * time.Hour
+	expires := now.Add(ttl)
+	caps, _ := json.Marshal(user.Capabilities)
+	_, err := a.store.db.Exec(`INSERT INTO account_sessions
+		(id, session_hash, account_user_id, email, display_name, role, user_type, capabilities_json, expires_at, created_at, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"sess_"+randomHex(12), hashSession(raw), user.ID, user.Email, user.DisplayName, user.Role, user.UserType, string(caps),
+		expires.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339))
+	if err != nil {
+		return err
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "dquery_session",
+		Value:    raw,
+		Path:     "/",
+		Domain:   sharedCookieDomain(r),
+		Expires:  expires,
+		MaxAge:   int(ttl.Seconds()),
+		HttpOnly: true,
+		Secure:   secureCookie(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+	return nil
+}
+
+func (a *App) readSession(r *http.Request) (*accountSession, error) {
+	c, err := r.Cookie("dquery_session")
+	if err != nil || c.Value == "" {
+		return nil, sql.ErrNoRows
+	}
+	var s accountSession
+	var capsRaw string
+	var expRaw string
+	err = a.store.db.QueryRow(`SELECT id, account_user_id, email, display_name, role, user_type, capabilities_json, expires_at
+		FROM account_sessions WHERE session_hash = ?`, hashSession(c.Value)).
+		Scan(&s.ID, &s.User.ID, &s.User.Email, &s.User.DisplayName, &s.User.Role, &s.User.UserType, &capsRaw, &expRaw)
+	if err != nil {
+		return nil, err
+	}
+	exp, err := time.Parse(time.RFC3339, expRaw)
+	if err != nil || time.Now().UTC().After(exp) {
+		return nil, sql.ErrNoRows
+	}
+	_ = json.Unmarshal([]byte(capsRaw), &s.User.Capabilities)
+	if s.User.Capabilities == nil {
+		s.User.Capabilities = map[string]any{}
+	}
+	s.ExpiresAt = exp
+	_, _ = a.store.db.Exec(`UPDATE account_sessions SET last_seen_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), s.ID)
+	return &s, nil
+}
+
+func (a *App) clearSession(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie("dquery_session"); err == nil {
+		_, _ = a.store.db.Exec(`DELETE FROM account_sessions WHERE session_hash = ?`, hashSession(c.Value))
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "dquery_session",
+		Value:    "",
+		Path:     "/",
+		Domain:   sharedCookieDomain(r),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   secureCookie(r),
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 func (s *accountStore) defaultProfileID(ownerID string) (string, error) {
@@ -684,9 +942,11 @@ func (a *App) handleUpdateSettings(w http.ResponseWriter, r *http.Request, user 
 		BlockPageURL: strings.TrimSpace(in.BlockPageURL),
 		UpdatedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
-	if settings.Mode == "block_page" && !(strings.HasPrefix(settings.BlockPageURL, "https://") || strings.HasPrefix(settings.BlockPageURL, "http://")) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_block_page_url"})
-		return
+	if settings.Mode == "block_page" {
+		if _, ok := blockPageDNSTarget(settings.BlockPageURL); !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_block_page_target"})
+			return
+		}
 	}
 	if err := a.store.upsertBlockSettings(settings); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage_error"})
@@ -1624,12 +1884,18 @@ func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
 		if action, ok := a.store.domainActionFor(personalOwnerID, qname); ok {
 			if action.Action == "block" {
 				response := nxdomainResponse(&query)
+				if blockResponse, ok := a.blockPageResponse(r.Context(), personalOwnerID, &query); ok {
+					response = blockResponse
+				}
 				a.logPersonalQuery(personalOwnerID, qname, qtype, "block_domain_rule", "", a.extractClientIP(r))
 				a.writeDNSResponse(w, r, http.StatusOK, response, 60, debugHeaders{QName: qname, QType: qtype, CacheStatus: "BYPASS"})
 				return
 			}
 		} else if setName, ok := a.store.knownRuleSetMatch(personalOwnerID, qname); ok {
 			response := nxdomainResponse(&query)
+			if blockResponse, ok := a.blockPageResponse(r.Context(), personalOwnerID, &query); ok {
+				response = blockResponse
+			}
 			a.logPersonalQuery(personalOwnerID, qname, qtype, "block_ruleset", setName, a.extractClientIP(r))
 			a.writeDNSResponse(w, r, http.StatusOK, response, 60, debugHeaders{QName: qname, QType: qtype, CacheStatus: "BYPASS"})
 			return
@@ -1720,6 +1986,117 @@ func nxdomainResponse(query *dns.Msg) []byte {
 		return []byte{}
 	}
 	return packed
+}
+
+func (a *App) blockPageResponse(ctx context.Context, ownerID string, query *dns.Msg) ([]byte, bool) {
+	settings, err := a.store.getBlockSettings(ownerID)
+	if err != nil || settings.Mode != "block_page" {
+		return nil, false
+	}
+	target, ok := blockPageDNSTarget(settings.BlockPageURL)
+	if !ok {
+		return nil, false
+	}
+	return dnsRedirectResponse(ctx, query, target), true
+}
+
+func blockPageDNSTarget(rawURL string) (string, bool) {
+	value := strings.TrimSpace(rawURL)
+	if value == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", false
+	}
+	host := parsed.Hostname()
+	if parsed.Scheme == "" {
+		parsed, err = url.Parse("//" + value)
+		if err != nil {
+			return "", false
+		}
+		host = parsed.Hostname()
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "" {
+		return "", false
+	}
+	if _, ok := dns.IsDomainName(dns.Fqdn(host)); net.ParseIP(host) == nil && !ok {
+		return "", false
+	}
+	return host, true
+}
+
+func dnsRedirectResponse(ctx context.Context, query *dns.Msg, target string) []byte {
+	var response dns.Msg
+	response.SetReply(query)
+	response.Rcode = dns.RcodeSuccess
+	response.Authoritative = false
+	if len(query.Question) == 0 {
+		packed, _ := response.Pack()
+		return packed
+	}
+	question := query.Question[0]
+	ttl := uint32(60)
+	targetIP := net.ParseIP(target)
+	if targetIP != nil {
+		switch question.Qtype {
+		case dns.TypeA:
+			if ip4 := targetIP.To4(); ip4 != nil {
+				response.Answer = append(response.Answer, &dns.A{
+					Hdr: dns.RR_Header{Name: question.Name, Rrtype: dns.TypeA, Class: question.Qclass, Ttl: ttl},
+					A:   ip4,
+				})
+			}
+		case dns.TypeAAAA:
+			if ip16 := targetIP.To16(); ip16 != nil && targetIP.To4() == nil {
+				response.Answer = append(response.Answer, &dns.AAAA{
+					Hdr:  dns.RR_Header{Name: question.Name, Rrtype: dns.TypeAAAA, Class: question.Qclass, Ttl: ttl},
+					AAAA: ip16,
+				})
+			}
+		}
+	} else {
+		targetName := dns.Fqdn(target)
+		response.Answer = append(response.Answer, &dns.CNAME{
+			Hdr:    dns.RR_Header{Name: question.Name, Rrtype: dns.TypeCNAME, Class: question.Qclass, Ttl: ttl},
+			Target: targetName,
+		})
+		if question.Qtype == dns.TypeA || question.Qtype == dns.TypeAAAA {
+			lookupCtx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+			defer cancel()
+			for _, ip := range lookupRedirectTargetIPs(lookupCtx, target) {
+				if question.Qtype == dns.TypeA {
+					if ip4 := ip.To4(); ip4 != nil {
+						response.Answer = append(response.Answer, &dns.A{
+							Hdr: dns.RR_Header{Name: targetName, Rrtype: dns.TypeA, Class: question.Qclass, Ttl: ttl},
+							A:   ip4,
+						})
+					}
+					continue
+				}
+				if ip16 := ip.To16(); ip16 != nil && ip.To4() == nil {
+					response.Answer = append(response.Answer, &dns.AAAA{
+						Hdr:  dns.RR_Header{Name: targetName, Rrtype: dns.TypeAAAA, Class: question.Qclass, Ttl: ttl},
+						AAAA: ip16,
+					})
+				}
+			}
+		}
+	}
+	packed, err := response.Pack()
+	if err != nil {
+		return []byte{}
+	}
+	return packed
+}
+
+func lookupRedirectTargetIPs(ctx context.Context, target string) []net.IP {
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", target)
+	if err != nil {
+		return nil
+	}
+	return ips
 }
 
 func isPersonalDoHPath(path string) bool {

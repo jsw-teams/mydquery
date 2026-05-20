@@ -79,14 +79,23 @@ try {
     if (loginMetrics.hasReadyText) failures.push(`${viewport.name}: login page leaked ready debug text`);
     if (loginMetrics.backLinkTop <= loginMetrics.loginButtonBottom) failures.push(`${viewport.name}: public lookup link is on the same row as login button`);
     if (loginMetrics.widthOverflow) failures.push(`${viewport.name}: login horizontal overflow`);
+    const popupPromise = page.waitForEvent("popup");
+    await page.getByRole("button", { name: /打开登录|Open sign-in/ }).click();
+    const popup = await popupPromise;
+    await popup.waitForLoadState("domcontentloaded");
+    const popupURL = new URL(popup.url());
+    if (popupURL.origin !== origin || popupURL.pathname !== "/auth/account/start" || popupURL.searchParams.get("popup") !== "1") {
+      failures.push(`${viewport.name}: login popup did not open dquery auth start`);
+    }
+    await popup.close();
 
-    await page.goto(`${origin}/console/`, { waitUntil: "networkidle" });
-    if (!page.url().includes("/login")) failures.push(`${viewport.name}: anonymous console did not redirect to login`);
-
+    let authorizedConsole = false;
     await page.route("https://gateway.js.gripe/api/v1/dquery/session", (route) => route.fulfill({
-      status: 200,
+      status: authorizedConsole ? 200 : 401,
       contentType: "application/json",
-      body: JSON.stringify({ ok: true, user: { id: "usr_test", email: "test@js.gripe", display_name: "Test", role: "member", user_type: "member" }, capabilities: {}, initialized: true })
+      body: JSON.stringify(authorizedConsole
+        ? { ok: true, user: { id: "usr_test", email: "test@js.gripe", display_name: "Test", role: "member", user_type: "member" }, capabilities: {}, initialized: true }
+        : { ok: false, error: "invalid_account_session" })
     }));
     await page.route("https://gateway.js.gripe/api/v1/dquery/settings", async (route) => {
       if (route.request().method() === "PATCH") {
@@ -111,7 +120,10 @@ try {
       }
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, logs: [{ id: "log_test", owner_user_id: "usr_test", qname: "example.com", qtype: "A", action: "resolve", created_at: "2026-05-09T00:00:00Z" }] }) });
     });
-    await page.addInitScript(() => sessionStorage.setItem("dquery.accountToken", "test-token"));
+    await page.goto(`${origin}/console/`, { waitUntil: "networkidle" });
+    if (!page.url().includes("/login")) failures.push(`${viewport.name}: anonymous console did not redirect to login`);
+
+    authorizedConsole = true;
     await page.goto(`${origin}/console/`, { waitUntil: "networkidle" });
 
     await page.getByRole("button", { name: /规则集|Rule sets/ }).click();
@@ -123,7 +135,7 @@ try {
     await page.getByRole("button", { name: /保存域名规则|Save domain rule/ }).click();
     await page.getByRole("button", { name: /删除|Delete/ }).first().click();
     await page.getByRole("button", { name: /拦截行为|Blocking/ }).click();
-    await page.getByRole("button", { name: /劫持到拦截页|Hijack to block page/ }).click();
+    await page.getByRole("button", { name: /定向到目标|Redirect to target/ }).click();
     await page.fill("#block-page-url", "https://dns.js.gripe/blocked");
     await page.getByRole("button", { name: /保存拦截行为|Save behavior/ }).click();
     await page.getByRole("button", { name: /查询日志|Logs/ }).first().click();
