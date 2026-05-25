@@ -30,7 +30,7 @@ type learnedEntry struct {
 
 type Store struct {
 	exacts   map[string]struct{}
-	suffixes []string
+	suffixes map[string]struct{}
 	keywords []string
 	v4nets   []*net.IPNet
 	v6nets   []*net.IPNet
@@ -48,7 +48,11 @@ func Load(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("parse china rules: %w", err)
 	}
-	s := &Store{exacts: make(map[string]struct{}, len(c.Exacts)), learned: map[string]learnedEntry{}}
+	s := &Store{
+		exacts:   make(map[string]struct{}, len(c.Exacts)),
+		suffixes: make(map[string]struct{}, len(c.Suffixes)),
+		learned:  map[string]learnedEntry{},
+	}
 	for _, v := range c.Exacts {
 		v = normalize(v)
 		if v != "" {
@@ -58,10 +62,9 @@ func Load(path string) (*Store, error) {
 	for _, v := range c.Suffixes {
 		v = normalize(v)
 		if v != "" {
-			s.suffixes = append(s.suffixes, v)
+			s.suffixes[v] = struct{}{}
 		}
 	}
-	sort.Slice(s.suffixes, func(i, j int) bool { return len(s.suffixes[i]) > len(s.suffixes[j]) })
 
 	for _, v := range c.Keywords {
 		v = strings.TrimSpace(strings.ToLower(v))
@@ -95,8 +98,8 @@ func (s *Store) IsCNDomain(name string, now time.Time) bool {
 	if _, ok := s.exacts[host]; ok {
 		return true
 	}
-	for _, suffix := range s.suffixes {
-		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+	for candidate := host; candidate != ""; candidate = parentDomain(candidate) {
+		if _, ok := s.suffixes[candidate]; ok {
 			return true
 		}
 	}
@@ -182,4 +185,11 @@ func (s *Store) isLearned(host string, now time.Time) bool {
 
 func normalize(v string) string {
 	return strings.Trim(strings.TrimSpace(strings.ToLower(v)), ".")
+}
+
+func parentDomain(domain string) string {
+	if i := strings.IndexByte(domain, '.'); i >= 0 && i+1 < len(domain) {
+		return domain[i+1:]
+	}
+	return ""
 }

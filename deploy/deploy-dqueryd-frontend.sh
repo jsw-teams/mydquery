@@ -12,6 +12,7 @@ flock -n 9
 cd "$APP_DIR"
 npm ci
 npm run build
+/opt/deploy-hooks/bin/inject-privacy-analytics-token.mjs "$APP_DIR/dist/privacy-plugins.json"
 
 install -d "$RELEASE_DIR"
 cp -a "$APP_DIR/dist/." "$RELEASE_DIR/"

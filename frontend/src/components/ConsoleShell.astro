@@ -77,6 +77,13 @@ const endpoint = import.meta.env.PUBLIC_DQUERY_API_ENDPOINT || "https://gateway.
               <button type="button" data-value="block" data-i18n="actionBlock">拦截</button>
             </div>
           </div>
+          <div>
+            <span class="control-label" data-i18n="domainScope">范围</span>
+            <div class="segmented" data-control="domain_match_type">
+              <button type="button" data-value="domain_suffix" class="active" data-i18n="scopeSuffix">域名及子域名</button>
+              <button type="button" data-value="exact" data-i18n="scopeExact">仅此域名</button>
+            </div>
+          </div>
           <button class="pixel-button" type="submit" data-i18n="saveDomainRule">保存域名规则</button>
         </form>
         <div class="data-list" id="domain-rule-list"></div>
@@ -119,6 +126,16 @@ const endpoint = import.meta.env.PUBLIC_DQUERY_API_ENDPOINT || "https://gateway.
           </label>
           <button class="pixel-button" type="submit" data-i18n="searchLogs">查询日志</button>
         </form>
+        <div class="log-charts">
+          <section class="log-chart" aria-labelledby="top-query-domains-title">
+            <h3 id="top-query-domains-title" data-i18n="topQueriedDomains">查询最多域名</h3>
+            <div class="chart-bars" id="top-query-domains"></div>
+          </section>
+          <section class="log-chart" aria-labelledby="top-blocked-domains-title">
+            <h3 id="top-blocked-domains-title" data-i18n="topBlockedDomains">拦截最多域名</h3>
+            <div class="chart-bars" id="top-blocked-domains"></div>
+          </section>
+        </div>
         <div class="data-list" id="log-list"></div>
       </div>
     </section>

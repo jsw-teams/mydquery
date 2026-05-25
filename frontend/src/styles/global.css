@@ -1264,7 +1264,7 @@ pre {
 .log-toolbar,
 .block-control-band {
   display: grid;
-  grid-template-columns: minmax(180px, 0.9fr) minmax(260px, 1.35fr) minmax(150px, auto);
+  grid-template-columns: minmax(180px, 0.9fr) minmax(220px, 1fr) minmax(220px, 1fr) minmax(150px, auto);
   gap: 12px;
   align-items: end;
 }
@@ -1335,6 +1335,68 @@ pre {
   font-weight: 800;
 }
 
+.log-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.log-chart {
+  border: 2px solid #172033;
+  background: #f7fbff;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.log-chart h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.chart-bars {
+  display: grid;
+  gap: 8px;
+}
+
+.chart-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.chart-bar div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.chart-bar strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-bar span {
+  display: block;
+  width: 0;
+  height: 10px;
+  border: 2px solid #172033;
+  background: #77d8c4;
+}
+
+.chart-bar em {
+  min-width: 32px;
+  text-align: right;
+  font-style: normal;
+  font-weight: 800;
+}
+
 .data-item[data-enabled="true"] em {
   background: #e8ffe9;
 }
@@ -1355,7 +1417,8 @@ pre {
   .console-summary,
   .focused-form,
   .log-toolbar,
-  .block-control-band {
+  .block-control-band,
+  .log-charts {
     grid-template-columns: 1fr;
   }
 

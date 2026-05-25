@@ -16,6 +16,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -436,6 +437,11 @@ type queryLog struct {
 	CreatedAt   string `json:"created_at"`
 }
 
+type queryLogStat struct {
+	Domain string `json:"domain"`
+	Count  int    `json:"count"`
+}
+
 type blockSettings struct {
 	OwnerUserID  string `json:"owner_user_id"`
 	Mode         string `json:"mode"`
@@ -618,7 +624,7 @@ func (a *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) bool {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return true
 	}
-	if path != "/session" && path != "/settings" && path != "/rulesets" && path != "/domain-rules" && path != "/profiles" && path != "/logs" && !strings.HasPrefix(path, "/rulesets/") && !strings.HasPrefix(path, "/domain-rules/") && !strings.HasPrefix(path, "/profiles/") {
+	if path != "/session" && path != "/settings" && path != "/rulesets" && path != "/domain-rules" && path != "/profiles" && path != "/logs" && path != "/logs/stats" && !strings.HasPrefix(path, "/rulesets/") && !strings.HasPrefix(path, "/domain-rules/") && !strings.HasPrefix(path, "/profiles/") {
 		return false
 	}
 	user, ok := a.requireAccountUser(w, r)
@@ -646,6 +652,8 @@ func (a *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) bool {
 		a.handleDeleteDomainAction(w, r, user, strings.TrimPrefix(path, "/domain-rules/"))
 	case path == "/logs" && r.Method == http.MethodGet:
 		a.handleQueryLogs(w, r, user)
+	case path == "/logs/stats" && r.Method == http.MethodGet:
+		a.handleQueryLogStats(w, r, user)
 	case path == "/logs" && r.Method == http.MethodDelete:
 		a.handleClearQueryLogs(w, r, user)
 	case path == "/profiles" && r.Method == http.MethodGet:
@@ -995,6 +1003,15 @@ func (a *App) handleQueryLogs(w http.ResponseWriter, r *http.Request, user accou
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "logs": logs})
+}
+
+func (a *App) handleQueryLogStats(w http.ResponseWriter, r *http.Request, user account.User) {
+	stats, err := a.store.queryLogStats(user.ID, r.URL.Query().Get("limit"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage_error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stats": stats})
 }
 
 func (a *App) handleClearQueryLogs(w http.ResponseWriter, r *http.Request, user account.User) {
@@ -1621,10 +1638,7 @@ func (s *accountStore) insertQueryLog(logEntry queryLog) {
 func (s *accountStore) listQueryLogs(ownerID, q, limitValue string) ([]queryLog, error) {
 	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
 	_, _ = s.db.Exec(`DELETE FROM dns_query_logs WHERE created_at < ?`, cutoff)
-	limit := 50
-	if parsed, err := strconv.Atoi(strings.TrimSpace(limitValue)); err == nil && parsed > 0 && parsed <= 200 {
-		limit = parsed
-	}
+	limit := boundedLimit(limitValue, 50, 200)
 	q = strings.TrimSpace(strings.ToLower(q))
 	var rows *sql.Rows
 	var err error
@@ -1648,9 +1662,59 @@ func (s *accountStore) listQueryLogs(ownerID, q, limitValue string) ([]queryLog,
 	return logs, rows.Err()
 }
 
+func (s *accountStore) queryLogStats(ownerID, limitValue string) (map[string][]queryLogStat, error) {
+	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	_, _ = s.db.Exec(`DELETE FROM dns_query_logs WHERE created_at < ?`, cutoff)
+	limit := boundedLimit(limitValue, 8, 20)
+
+	queried, err := s.listQueryLogStatRows(`SELECT qname, COUNT(1) AS count
+		FROM dns_query_logs
+		WHERE owner_user_id = ?
+		GROUP BY qname
+		ORDER BY count DESC, qname ASC
+		LIMIT ?`, ownerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	blocked, err := s.listQueryLogStatRows(`SELECT qname, COUNT(1) AS count
+		FROM dns_query_logs
+		WHERE owner_user_id = ? AND action IN ('block_domain_rule', 'block_ruleset')
+		GROUP BY qname
+		ORDER BY count DESC, qname ASC
+		LIMIT ?`, ownerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return map[string][]queryLogStat{"queried": queried, "blocked": blocked}, nil
+}
+
+func (s *accountStore) listQueryLogStatRows(query string, ownerID string, limit int) ([]queryLogStat, error) {
+	rows, err := s.db.Query(query, ownerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stats := []queryLogStat{}
+	for rows.Next() {
+		var item queryLogStat
+		if err := rows.Scan(&item.Domain, &item.Count); err != nil {
+			return nil, err
+		}
+		stats = append(stats, item)
+	}
+	return stats, rows.Err()
+}
+
 func (s *accountStore) clearQueryLogs(ownerID string) error {
 	_, err := s.db.Exec(`DELETE FROM dns_query_logs WHERE owner_user_id = ?`, ownerID)
 	return err
+}
+
+func boundedLimit(value string, fallback, max int) int {
+	if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && parsed > 0 && parsed <= max {
+		return parsed
+	}
+	return fallback
 }
 
 func boolInt(value bool) int {
@@ -1668,6 +1732,10 @@ func normalizeDomain(value string) string {
 		return ""
 	}
 	return value
+}
+
+func normalizeQueryName(value string) string {
+	return strings.TrimSuffix(strings.ToLower(dns.Fqdn(strings.TrimSpace(value))), ".")
 }
 
 func parentDomain(domain string) string {
@@ -1869,7 +1937,7 @@ func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
 	}
 
 	question := query.Question[0]
-	qname := strings.TrimSuffix(strings.ToLower(question.Name), ".")
+	qname := normalizeQueryName(question.Name)
 	qtype := dns.TypeToString[question.Qtype]
 	if qtype == "" {
 		qtype = fmt.Sprintf("TYPE%d", question.Qtype)
@@ -1903,7 +1971,11 @@ func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
 	}
 
 	visitorIP := a.extractClientIP(r)
-	visitorECS, visitorPresent := ecs.VisitorFromIP(visitorIP, a.cfg.ECS.VisitorV4Mask, a.cfg.ECS.VisitorV6Mask)
+	visitorECSIP := visitorIP
+	if isCloudflareEdgeIP(visitorIP) {
+		visitorECSIP = ""
+	}
+	visitorECS, visitorPresent := ecs.VisitorFromIP(visitorECSIP, a.cfg.ECS.VisitorV4Mask, a.cfg.ECS.VisitorV6Mask)
 	if !visitorPresent {
 		visitorECS = ""
 	}
@@ -1916,8 +1988,9 @@ func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
 
 	cacheKey := ""
 	if a.cache != nil {
-		cacheKey = cache.Key(routeName, routeCfg.Upstream, selectedECS, string(queryBytes))
+		cacheKey = dnsCacheKey(routeName, routeCfg.Upstream, selectedECS, &query)
 		if cached, ok := a.cache.GetFresh(cacheKey, time.Now()); ok {
+			cached = responseWithQueryID(cached, query.Id)
 			ttl := responseTTL(cached, a.cfg.Cache.DefaultPositiveTTL, a.cfg.Cache.NegativeTTL, a.cfg.Cache.MinPositiveTTL, a.cfg.Cache.MaxPositiveTTL)
 			a.logPersonalQuery(personalOwnerID, qname, qtype, "resolve_cache", "", visitorIP)
 			a.writeDNSResponse(w, r, http.StatusOK, cached, effectiveResponseCacheTTL(ttl, a.cfg.Cache), debugHeaders{
@@ -1932,6 +2005,7 @@ func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if a.cache != nil && cacheKey != "" {
 			if stale, ok := a.cache.GetStale(cacheKey, time.Now()); ok {
+				stale = responseWithQueryID(stale, query.Id)
 				ttl := responseTTL(stale, a.cfg.Cache.DefaultPositiveTTL, a.cfg.Cache.NegativeTTL, a.cfg.Cache.MinPositiveTTL, a.cfg.Cache.MaxPositiveTTL)
 				a.writeDNSResponse(w, r, http.StatusOK, stale, effectiveResponseCacheTTL(ttl, a.cfg.Cache), debugHeaders{
 					Route: routeName, Upstream: upstreamName, SelectedECS: selectedECS, ECSSource: selectedSource,
@@ -2167,6 +2241,59 @@ func isMainlandChinaRequest(visitorIP, country string) bool {
 	return ip.IsPrivate() || ip.IsLoopback()
 }
 
+var cloudflareEdgePrefixes = mustParsePrefixes(
+	"173.245.48.0/20",
+	"103.21.244.0/22",
+	"103.22.200.0/22",
+	"103.31.4.0/22",
+	"141.101.64.0/18",
+	"108.162.192.0/18",
+	"190.93.240.0/20",
+	"188.114.96.0/20",
+	"197.234.240.0/22",
+	"198.41.128.0/17",
+	"162.158.0.0/15",
+	"104.16.0.0/13",
+	"104.24.0.0/14",
+	"172.64.0.0/13",
+	"131.0.72.0/22",
+	"2400:cb00::/32",
+	"2606:4700::/32",
+	"2803:f800::/32",
+	"2405:b500::/32",
+	"2405:8100::/32",
+	"2a06:98c0::/29",
+	"2c0f:f248::/32",
+)
+
+func isCloudflareEdgeIP(value string) bool {
+	addr, err := netip.ParseAddr(strings.TrimSpace(value))
+	if err != nil {
+		return false
+	}
+	if addr.Is4In6() {
+		addr = addr.Unmap()
+	}
+	for _, prefix := range cloudflareEdgePrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func mustParsePrefixes(values ...string) []netip.Prefix {
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			panic(err)
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes
+}
+
 func (a *App) resolveWithInflight(ctx context.Context, cacheKey, routeName string, routeCfg config.RouteConfig, query *dns.Msg, queryBytes []byte, selectedECS string) (*doh.Result, string, error) {
 	if cacheKey == "" {
 		return a.resolveUpstream(ctx, routeName, routeCfg, query, queryBytes, selectedECS)
@@ -2231,7 +2358,7 @@ func (a *App) readQueryBytes(r *http.Request) ([]byte, error) {
 		if encoded == "" {
 			return nil, fmt.Errorf("missing dns query parameter")
 		}
-		data, err := base64.RawURLEncoding.DecodeString(encoded)
+		data, err := decodeDNSQueryParam(encoded)
 		if err != nil {
 			return nil, fmt.Errorf("decode dns parameter: %w", err)
 		}
@@ -2251,6 +2378,56 @@ func (a *App) readQueryBytes(r *http.Request) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unsupported method")
 	}
+}
+
+func decodeDNSQueryParam(encoded string) ([]byte, error) {
+	if data, err := base64.RawURLEncoding.DecodeString(encoded); err == nil {
+		return data, nil
+	}
+	if data, err := base64.URLEncoding.DecodeString(encoded); err == nil {
+		return data, nil
+	}
+	return nil, base64.CorruptInputError(0)
+}
+
+func dnsCacheKey(routeName, upstreamName, selectedECS string, query *dns.Msg) string {
+	parts := []string{
+		routeName,
+		upstreamName,
+		selectedECS,
+		strconv.Itoa(query.Opcode),
+		boolCachePart(query.CheckingDisabled),
+	}
+	opt := query.IsEdns0()
+	if opt != nil {
+		parts = append(parts, boolCachePart(opt.Do()))
+	} else {
+		parts = append(parts, "false")
+	}
+	for _, question := range query.Question {
+		parts = append(parts,
+			normalizeQueryName(question.Name),
+			strconv.Itoa(int(question.Qtype)),
+			strconv.Itoa(int(question.Qclass)),
+		)
+	}
+	return cache.Key(parts...)
+}
+
+func boolCachePart(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}
+
+func responseWithQueryID(payload []byte, id uint16) []byte {
+	if len(payload) < 2 {
+		return payload
+	}
+	payload[0] = byte(id >> 8)
+	payload[1] = byte(id)
+	return payload
 }
 
 func (a *App) extractClientECS(r *http.Request, query *dns.Msg) (string, string) {
