@@ -2032,7 +2032,7 @@ func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
 		a.rules.LearnCNDomain(qname, learnTTL, time.Now())
 	}
 	if a.cache != nil && cacheKey != "" {
-		a.cache.Set(cacheKey, result.ResponseBytes, ttl, a.cfg.Cache.StaleIfError, time.Now())
+		a.cache.Set(cacheKey, result.ResponseBytes, ttl, cacheStaleExtra(result.ResponseBytes, a.cfg.Cache), time.Now())
 	}
 	log.Printf("level=info route=%s qname=%s qtype=%s upstream=%s ecs_source=%s", routeName, qname, qtype, upstreamName, selectedSource)
 	a.logPersonalQuery(personalOwnerID, qname, qtype, "resolve", "", visitorIP)
@@ -2493,11 +2493,7 @@ func (a *App) writeDNSResponse(w http.ResponseWriter, r *http.Request, status in
 	if dbg.CacheStatus != "" {
 		w.Header().Set("X-DQuery-Cache", dbg.CacheStatus)
 	}
-	if r.Method == http.MethodGet {
-		w.Header().Set("Cache-Control", buildCacheControl(a.cfg.Cache, ttl))
-	} else {
-		w.Header().Set("Cache-Control", "no-store")
-	}
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_, _ = w.Write(payload)
 }
@@ -2533,10 +2529,13 @@ func responseTTL(payload []byte, positive, negative, minPositive, maxPositive ti
 		return negative
 	}
 	if msg.Rcode != dns.RcodeSuccess {
-		return negative
+		return negativeResponseTTL(&msg, negative)
+	}
+	if len(msg.Answer) == 0 {
+		return negativeResponseTTL(&msg, negative)
 	}
 	minTTL := uint32(0)
-	for _, rr := range append(append([]dns.RR{}, msg.Answer...), append(msg.Ns, msg.Extra...)...) {
+	for _, rr := range msg.Answer {
 		if rr == nil {
 			continue
 		}
@@ -2548,7 +2547,7 @@ func responseTTL(payload []byte, positive, negative, minPositive, maxPositive ti
 	if minTTL == 0 {
 		return clampTTL(positive, minPositive, maxPositive)
 	}
-	return clampTTL(time.Duration(minTTL)*time.Second, minPositive, maxPositive)
+	return capTTL(time.Duration(minTTL)*time.Second, maxPositive)
 }
 
 func clampTTL(ttl, minPositive, maxPositive time.Duration) time.Duration {
@@ -2564,6 +2563,35 @@ func clampTTL(ttl, minPositive, maxPositive time.Duration) time.Duration {
 	return ttl
 }
 
+func capTTL(ttl, maxTTL time.Duration) time.Duration {
+	if ttl <= 0 {
+		return ttl
+	}
+	if maxTTL > 0 && ttl > maxTTL {
+		return maxTTL
+	}
+	return ttl
+}
+
+func negativeResponseTTL(msg *dns.Msg, fallback time.Duration) time.Duration {
+	ttl := fallback
+	for _, rr := range msg.Ns {
+		soa, ok := rr.(*dns.SOA)
+		if !ok {
+			continue
+		}
+		soaTTL := time.Duration(soa.Hdr.Ttl) * time.Second
+		soaMinimum := time.Duration(soa.Minttl) * time.Second
+		if soaMinimum > 0 && (soaTTL == 0 || soaMinimum < soaTTL) {
+			soaTTL = soaMinimum
+		}
+		if soaTTL > 0 && (ttl <= 0 || soaTTL < ttl) {
+			ttl = soaTTL
+		}
+	}
+	return ttl
+}
+
 func effectiveResponseCacheTTL(ttl time.Duration, cfg config.CacheConfig) time.Duration {
 	if cfg.ResponseBrowserMaxAge > 0 && ttl > cfg.ResponseBrowserMaxAge {
 		return cfg.ResponseBrowserMaxAge
@@ -2572,4 +2600,15 @@ func effectiveResponseCacheTTL(ttl time.Duration, cfg config.CacheConfig) time.D
 		return cfg.DefaultPositiveTTL
 	}
 	return ttl
+}
+
+func cacheStaleExtra(payload []byte, cfg config.CacheConfig) time.Duration {
+	var msg dns.Msg
+	if err := msg.Unpack(payload); err != nil {
+		return 0
+	}
+	if msg.Rcode != dns.RcodeSuccess || len(msg.Answer) == 0 {
+		return 0
+	}
+	return cfg.StaleIfError
 }
