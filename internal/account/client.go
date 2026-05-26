@@ -5,21 +5,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"time"
 )
 
 type Config struct {
-	Enabled     bool     `yaml:"enabled"`
-	ClientName  string   `yaml:"client_name"`
-	ClientID    string   `yaml:"client_id"`
-	APIKey      string   `yaml:"api_key"`
-	BaseURL     string   `yaml:"base_url"`
-	LoginURL    string   `yaml:"login_url"`
-	RedirectURI string   `yaml:"redirect_uri"`
-	Scopes      []string `yaml:"scopes"`
+	Enabled      bool     `yaml:"enabled"`
+	ClientName   string   `yaml:"client_name"`
+	ClientID     string   `yaml:"client_id"`
+	APIKey       string   `yaml:"api_key"`
+	BaseURL      string   `yaml:"base_url"`
+	LoginURL     string   `yaml:"login_url"`
+	RedirectURI  string   `yaml:"redirect_uri"`
+	Scopes       []string `yaml:"scopes"`
 }
 
 type User struct {
@@ -54,26 +53,10 @@ func NewClient(cfg Config) *Client {
 	if baseURL == "" {
 		baseURL = "https://gateway.js.gripe/api/v1/myaccount"
 	}
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   1500 * time.Millisecond,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          64,
-		MaxIdleConnsPerHost:   16,
-		MaxConnsPerHost:       32,
-		IdleConnTimeout:       60 * time.Second,
-		TLSHandshakeTimeout:   1500 * time.Millisecond,
-		ResponseHeaderTimeout: 3 * time.Second,
-		ExpectContinueTimeout: 500 * time.Millisecond,
-	}
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout:   4 * time.Second,
-			Transport: transport,
+			Timeout: 5 * time.Second,
 		},
 	}
 }
