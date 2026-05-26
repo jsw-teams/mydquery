@@ -55,6 +55,7 @@ type App struct {
 	inflight   map[string]*inflightCall
 	actionMu   sync.Mutex
 	actionLast map[string]time.Time
+	queryLogs  chan queryLog
 }
 
 type knownRuleSet struct {
@@ -96,7 +97,7 @@ func New(cfg *config.Config, rules *chinarules.Store, resolver *doh.Resolver) (*
 	if err != nil {
 		return nil, err
 	}
-	return &App{
+	app := &App{
 		cfg:        cfg,
 		rules:      rules,
 		resolver:   resolver,
@@ -106,7 +107,10 @@ func New(cfg *config.Config, rules *chinarules.Store, resolver *doh.Resolver) (*
 		startedAt:  time.Now().UTC(),
 		inflight:   map[string]*inflightCall{},
 		actionLast: map[string]time.Time{},
-	}, nil
+		queryLogs:  make(chan queryLog, 2048),
+	}
+	app.startQueryLogWriter()
+	return app, nil
 }
 
 func (a *App) Handler() http.Handler {
@@ -167,6 +171,24 @@ func (a *App) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.cache != nil {
 		payload["cache"] = a.cache.Stats()
+	}
+	if a.queryLogs != nil {
+		payload["query_log_queue"] = map[string]any{"queued": len(a.queryLogs), "capacity": cap(a.queryLogs)}
+	}
+	if a.store != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 100*time.Millisecond)
+		err := a.store.ping(ctx)
+		cancel()
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"ok":      false,
+				"status":  "not_ready",
+				"service": "dqueryd",
+				"error":   "storage_unavailable",
+			})
+			return
+		}
+		payload["storage"] = "ok"
 	}
 	writeJSON(w, http.StatusOK, payload)
 }
@@ -453,10 +475,13 @@ func newAccountStore(dbPath string) (*accountStore, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0750); err != nil {
 		return nil, fmt.Errorf("create storage dir: %w", err)
 	}
-	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on&_busy_timeout=5000")
+	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on&_busy_timeout=3000&_journal_mode=WAL&_synchronous=NORMAL")
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
 	store := &accountStore{db: db}
 	if err := store.migrate(); err != nil {
 		_ = db.Close()
@@ -603,6 +628,10 @@ func (s *accountStore) migrate() error {
 		return err
 	}
 	return nil
+}
+
+func (s *accountStore) ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
 }
 
 func (a *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) bool {
@@ -1629,10 +1658,13 @@ func (s *accountStore) domainActionFor(ownerID, qname string) (domainAction, boo
 }
 
 func (s *accountStore) insertQueryLog(logEntry queryLog) {
-	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
-	_, _ = s.db.Exec(`DELETE FROM dns_query_logs WHERE created_at < ?`, cutoff)
 	_, _ = s.db.Exec(`INSERT INTO dns_query_logs (id, owner_user_id, qname, qtype, action, ruleset_name, client_ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		logEntry.ID, logEntry.OwnerUserID, logEntry.QName, logEntry.QType, logEntry.Action, logEntry.RuleSetName, logEntry.ClientIP, logEntry.CreatedAt)
+}
+
+func (s *accountStore) pruneQueryLogs() {
+	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	_, _ = s.db.Exec(`DELETE FROM dns_query_logs WHERE created_at < ?`, cutoff)
 }
 
 func (s *accountStore) listQueryLogs(ownerID, q, limitValue string) ([]queryLog, error) {
@@ -2190,7 +2222,7 @@ func (a *App) logPersonalQuery(ownerID, qname, qtype, action, ruleSetName, clien
 	if ownerID == "" || a.store == nil {
 		return
 	}
-	a.store.insertQueryLog(queryLog{
+	entry := queryLog{
 		ID:          "log_" + randomHex(8),
 		OwnerUserID: ownerID,
 		QName:       qname,
@@ -2199,7 +2231,35 @@ func (a *App) logPersonalQuery(ownerID, qname, qtype, action, ruleSetName, clien
 		RuleSetName: ruleSetName,
 		ClientIP:    clientIP,
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	if a.queryLogs == nil {
+		a.store.insertQueryLog(entry)
+		return
+	}
+	select {
+	case a.queryLogs <- entry:
+	default:
+		log.Printf("level=warn event=query_log_queue_full owner=%s qname=%s action=%s", ownerID, qname, action)
+	}
+}
+
+func (a *App) startQueryLogWriter() {
+	if a.store == nil || a.queryLogs == nil {
+		return
+	}
+	go func() {
+		pruneTicker := time.NewTicker(15 * time.Minute)
+		defer pruneTicker.Stop()
+		a.store.pruneQueryLogs()
+		for {
+			select {
+			case entry := <-a.queryLogs:
+				a.store.insertQueryLog(entry)
+			case <-pruneTicker.C:
+				a.store.pruneQueryLogs()
+			}
+		}
+	}()
 }
 
 func validateRequest(r *http.Request) error {

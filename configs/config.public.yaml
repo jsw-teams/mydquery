@@ -1,7 +1,7 @@
 server:
   listen: 127.0.0.1:18053
-  read_timeout: 10s
-  write_timeout: 20s
+  read_timeout: 5s
+  write_timeout: 8s
   idle_timeout: 60s
   max_request_body: 65535
   client_ip_header: CF-Connecting-IP
@@ -64,8 +64,8 @@ upstreams:
     url: https://my.jsw.ac.cn/api/v1/dquery-cn
     method: POST
     http_version: auto
-    max_concurrent: 24
-    timeout: 5s
+    max_concurrent: 32
+    timeout: 2500ms
     headers: {}
     hmac:
       enabled: true
@@ -77,6 +77,6 @@ upstreams:
     url: https://gyvpces7ig.cloudflare-gateway.com/dns-query
     method: POST
     http_version: auto
-    max_concurrent: 64
-    timeout: 5s
+    max_concurrent: 96
+    timeout: 2500ms
     headers: {}
