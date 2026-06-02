@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	xproxy "golang.org/x/net/proxy"
 
 	"gateway-dquery-go/internal/config"
 	"gateway-dquery-go/internal/ecs"
@@ -77,11 +78,59 @@ func newHTTPClient(spec config.UpstreamSpec) *http.Client {
 		ExpectContinueTimeout: 1 * time.Second,
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 	}
+	if proxyURL := normalizeOutboundProxy(spec.OutboundProxy); proxyURL != "" {
+		if strings.HasPrefix(proxyURL, "socks5://") || strings.HasPrefix(proxyURL, "socks5h://") {
+			if proxyDialer, err := newSOCKS5ContextDialer(proxyURL, dialer); err == nil {
+				transport.Proxy = nil
+				transport.DialContext = proxyDialer.DialContext
+			} else {
+				transport.Proxy = nil
+				transport.DialContext = func(context.Context, string, string) (net.Conn, error) { return nil, err }
+			}
+		} else if u, err := url.Parse(proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(u)
+		} else {
+			transport.Proxy = func(*http.Request) (*url.URL, error) { return nil, err }
+		}
+	}
 	if strings.EqualFold(strings.TrimSpace(spec.HTTPVersion), "h1") {
 		transport.ForceAttemptHTTP2 = false
 		transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
 	}
 	return &http.Client{Transport: transport}
+}
+
+func normalizeOutboundProxy(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if !strings.Contains(value, "://") {
+		value = "socks5h://" + value
+	}
+	schemeEnd := strings.Index(value, "://") + 3
+	return strings.ToLower(value[:schemeEnd]) + value[schemeEnd:]
+}
+
+func newSOCKS5ContextDialer(raw string, forward *net.Dialer) (xproxy.ContextDialer, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	auth := (*xproxy.Auth)(nil)
+	if u.User != nil {
+		password, _ := u.User.Password()
+		auth = &xproxy.Auth{User: u.User.Username(), Password: password}
+	}
+	dialer, err := xproxy.SOCKS5("tcp", u.Host, auth, forward)
+	if err != nil {
+		return nil, err
+	}
+	contextDialer, ok := dialer.(xproxy.ContextDialer)
+	if !ok {
+		return nil, fmt.Errorf("socks5 dialer does not support context")
+	}
+	return contextDialer, nil
 }
 
 func (r *Resolver) Resolve(ctx context.Context, upstreamName string, query *dns.Msg, queryBytes []byte, selectedECS string) (*Result, error) {

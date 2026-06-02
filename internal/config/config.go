@@ -93,6 +93,7 @@ type UpstreamSpec struct {
 	Timeout       time.Duration     `yaml:"timeout"`
 	Headers       map[string]string `yaml:"headers"`
 	HTTPVersion   string            `yaml:"http_version"`
+	OutboundProxy string            `yaml:"outbound_proxy"`
 	MaxConcurrent int               `yaml:"max_concurrent"`
 	HMAC          UpstreamHMACSpec  `yaml:"hmac"`
 }
