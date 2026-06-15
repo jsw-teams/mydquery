@@ -10,10 +10,18 @@ import loginScript from "../scripts/login-auth.js?url";
     <div class="login-form-panel">
       <p class="pixel-kicker" data-i18n="kicker">账户 DNS</p>
       <h1 id="login-title" data-i18n="title">登录个人 DNS 控制台</h1>
-      <p class="login-copy" data-i18n="copy">使用技诉账户完成登录或注册，授权成功后会回到 DNS 控制台。</p>
-      <div class="login-primary-action">
-        <button class="pixel-button" type="button" id="login-button" data-i18n="submit">使用技诉账户登录</button>
-      </div>
+      <p class="login-copy" data-i18n="copy">使用 dquery 本地账户登录。外部 SSO 只作为本地账户绑定入口。</p>
+      <form class="login-primary-action" id="login-form">
+        <label>
+          <span data-i18n="email">邮箱</span>
+          <input id="login-email" type="email" autocomplete="username" required />
+        </label>
+        <label>
+          <span data-i18n="password">密码</span>
+          <input id="login-password" type="password" autocomplete="current-password" required />
+        </label>
+        <button class="pixel-button" type="submit" id="login-button" data-i18n="submit">登录</button>
+      </form>
       <div class="pixel-alert" id="login-status" role="status" aria-live="polite"></div>
       <div class="login-secondary-action">
         <a class="pixel-link" href="/" data-i18n="back">返回公共查询</a>

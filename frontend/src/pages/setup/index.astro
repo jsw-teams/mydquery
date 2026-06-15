@@ -1,0 +1,17 @@
+---
+import SetupPanel from "../../components/SetupPanel.astro";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+const title = "dquery.js.gripe 初始化";
+const description = "初始化 dquery 本地账户系统并创建首个 system_admin。";
+---
+
+<BaseLayout
+  title={title}
+  description={description}
+  lang="zh-CN"
+  canonical="https://dquery.js.gripe/setup/"
+  alternates={[{ lang: "zh-CN", href: "https://dquery.js.gripe/setup/" }]}
+>
+  <SetupPanel />
+</BaseLayout>

@@ -1,5 +1,5 @@
 const script = document.currentScript;
-const apiBase = script?.dataset.endpoint || "https://gateway.js.gripe/api/v1/dquery";
+const apiBase = script?.dataset.endpoint || "/api/v1/dquery";
 const lang = navigator.language?.toLowerCase().startsWith("zh") ? "zh" : "en";
 
 const copy = {
@@ -25,7 +25,7 @@ const copy = {
   }
 };
 
-const state = { token: sessionStorage.getItem("dquery.accountToken") || "", user: null, settings: { mode: "nxdomain", block_page_url: "" }, rulesets: [], domainRules: [], domainAction: "allow", domainMatchType: "domain_suffix", logs: [], logStats: { queried: [], blocked: [] } };
+const state = { user: null, settings: { mode: "nxdomain", block_page_url: "" }, rulesets: [], domainRules: [], domainAction: "allow", domainMatchType: "domain_suffix", logs: [], logStats: { queried: [], blocked: [] } };
 const els = {
   status: document.querySelector("#session-status"), endpoint: document.querySelector("#personal-endpoint"), metricRulesets: document.querySelector("#metric-rulesets"), metricBlockMode: document.querySelector("#metric-block-mode"),
   rulesetList: document.querySelector("#ruleset-list"), domainRuleForm: document.querySelector("#domain-rule-form"), domainRuleDomain: document.querySelector("#domain-rule-domain"), domainRuleList: document.querySelector("#domain-rule-list"),
@@ -34,9 +34,10 @@ const els = {
 
 document.querySelectorAll("[data-i18n]").forEach((node) => { const value = copy[lang][node.dataset.i18n]; if (value) node.textContent = value; });
 
-function authHeaders() { return state.token ? { Authorization: `Bearer ${state.token}` } : {}; }
 async function api(path, options = {}) {
-  const response = await fetch(`${apiBase}${path}`, { ...options, credentials: "include", headers: { Accept: "application/json", "Content-Type": "application/json", ...authHeaders(), ...(options.headers || {}) }, cache: "no-store" });
+  const headers = { Accept: "application/json", ...(options.headers || {}) };
+  if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+  const response = await fetch(`${apiBase}${path}`, { ...options, credentials: "include", headers, cache: "no-store" });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) { const error = new Error(payload.error || `HTTP ${response.status}`); error.status = response.status; throw error; }
   return payload;
@@ -60,10 +61,10 @@ function withTrailingSlash(path) {
   return path.endsWith("/") ? path : `${path}/`;
 }
 function redirectToLogin() { window.location.replace(withTrailingSlash("/login")); }
+function redirectToSetup() { window.location.replace(withTrailingSlash("/setup")); }
 async function signOut() {
-  sessionStorage.removeItem("dquery.accountToken");
   try {
-    await api("/logout", { method: "POST" });
+    await api("/auth/logout", { method: "POST" });
   } catch {
     // Local cleanup still wins if the network is already gone.
   }
@@ -172,6 +173,8 @@ function renderChart(target, rows) {
 }
 async function loadAll() {
   try {
+    const setup = await api("/setup/status");
+    if (!setup.initialized) { redirectToSetup(); return; }
     const [session, settings, rulesets, domainRules, logs, logStats] = await Promise.all([api("/session"), api("/settings"), api("/rulesets"), api("/domain-rules"), api("/logs"), api("/logs/stats")]);
     state.user = session.user;
     state.settings = settings.settings || state.settings;
@@ -179,7 +182,8 @@ async function loadAll() {
     state.domainRules = domainRules.rules || [];
     state.logs = logs.logs || [];
     state.logStats = logStats.stats || state.logStats;
-    els.endpoint.textContent = `https://gateway.js.gripe/api/v1/dquery/${state.user.id}`;
+    const resolverUUID = session.default_resolver_uuid || session.profiles?.[0]?.resolver_uuid || "";
+    els.endpoint.textContent = resolverUUID ? `https://dquery.js.gripe/dns-query/${resolverUUID}` : "-";
     els.accountEmail.textContent = state.user.email || state.user.id;
     els.blockURL.value = state.settings.block_page_url || "";
     setBlockMode(state.settings.mode || "nxdomain");
@@ -188,7 +192,7 @@ async function loadAll() {
     renderLogs();
     setStatus(`${copy[lang].connected}: ${state.user.email || state.user.id}`, "ok");
   } catch (error) {
-    if (error.status === 401 || error.status === 403) { sessionStorage.removeItem("dquery.accountToken"); redirectToLogin(); return; }
+    if (error.status === 401 || error.status === 403) { redirectToLogin(); return; }
     setStatus(copy[lang].loadFailed, "bad");
   }
 }

@@ -51,6 +51,18 @@ cn_learning:
   ttl_floor: 60s
   ttl_cap: 10m
 
+regional_policy:
+  enabled: true
+  client_country_header: CF-IPCountry
+  anonymous_dns_query:
+    blocked_countries:
+      - CN
+      - HK
+      - MO
+    status_code: 451
+    reason: anonymous_doh_unavailable_in_region
+    body_message: Anonymous DoH is unavailable in this region. Please use an authenticated resolver profile.
+
 account:
   enabled: true
   base_url: http://127.0.0.1:9100/api/v1/myaccount
@@ -64,7 +76,7 @@ upstreams:
     url: https://my.jsw.ac.cn/api/v1/dquery-cn
     method: POST
     http_version: auto
-    outbound_proxy: socks5h://127.0.0.1:40000
+    outbound_proxy: ""
     max_concurrent: 24
     timeout: 5s
     headers: {}
@@ -78,7 +90,7 @@ upstreams:
     url: https://gyvpces7ig.cloudflare-gateway.com/dns-query
     method: POST
     http_version: auto
-    outbound_proxy: socks5h://127.0.0.1:40000
+    outbound_proxy: ""
     max_concurrent: 64
     timeout: 5s
     headers: {}

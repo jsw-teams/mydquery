@@ -1,5 +1,5 @@
 {
-  "endpoint": "https://gateway.js.gripe/api/v1/dquery",
+  "endpoint": "https://dquery.js.gripe/dns-query",
   "routes": [
     {
       "name": "China domains",

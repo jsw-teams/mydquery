@@ -2,16 +2,16 @@
 import LoginPanel from "../../components/LoginPanel.astro";
 import BaseLayout from "../../layouts/BaseLayout.astro";
 
-const title = "dns.js.gripe 登录";
-const description = "通过账户中心授权登录 dquery 个人 DNS 控制台。";
+const title = "dquery.js.gripe 登录";
+const description = "通过 dquery 本地 UUID 账户登录个人 DNS 控制台。";
 ---
 
 <BaseLayout
   title={title}
   description={description}
   lang="zh-CN"
-  canonical="https://dns.js.gripe/login/"
-  alternates={[{ lang: "zh-CN", href: "https://dns.js.gripe/login/" }]}
+  canonical="https://dquery.js.gripe/login/"
+  alternates={[{ lang: "zh-CN", href: "https://dquery.js.gripe/login/" }]}
 >
   <LoginPanel />
 </BaseLayout>

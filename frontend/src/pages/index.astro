@@ -2,26 +2,26 @@
 import DnsLookup from "../components/DnsLookup.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
 
-const title = "dns.js.gripe 公共 DNS 查询";
-const description = "使用 dns.js.gripe 查询公共 DNS 记录，并以 DNS JSON 查看原始响应。";
+const title = "dquery.js.gripe 公共 DNS 查询";
+const description = "使用 dquery.js.gripe 查询公共 DNS 记录，并以 DNS JSON 查看原始响应。";
 ---
 
 <BaseLayout
   title={title}
   description={description}
   lang="zh-CN"
-  canonical="https://dns.js.gripe/"
+  canonical="https://dquery.js.gripe/"
   alternates={[
-    { lang: "zh-CN", href: "https://dns.js.gripe/" },
-    { lang: "en", href: "https://dns.js.gripe/en/" }
+    { lang: "zh-CN", href: "https://dquery.js.gripe/" },
+    { lang: "en", href: "https://dquery.js.gripe/en/" }
   ]}
   jsonLd={{
     "@context": "https://schema.org",
     "@type": "WebApplication",
-    name: "dns.js.gripe",
+    name: "dquery.js.gripe",
     applicationCategory: "DeveloperApplication",
     operatingSystem: "Any",
-    url: "https://dns.js.gripe/",
+    url: "https://dquery.js.gripe/",
     description
   }}
 >

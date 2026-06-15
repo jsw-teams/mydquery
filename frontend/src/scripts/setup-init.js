@@ -2,26 +2,26 @@ const lang = navigator.language?.toLowerCase().startsWith("zh") ? "zh" : "en";
 
 const text = {
   en: {
-    kicker: "Account DNS",
-    title: "Sign in to DNS Console",
-    copy: "Sign in with your local dquery account. External SSO is linked to local users, not used as the primary account system.",
+    kicker: "dquery setup",
+    title: "Create system administrator",
+    copy: "Setup is only available before any local user exists. The first account becomes system_admin.",
     email: "Email",
+    displayName: "Display name",
     password: "Password",
-    submit: "Sign in",
-    back: "Back to public lookup",
-    failed: "Sign-in failed. Check your email and password.",
-    setup: "dquery is not initialized yet. Redirecting to setup."
+    submit: "Finish setup",
+    already: "dquery is already initialized. Redirecting to login.",
+    failed: "Setup failed. Use a valid email and a password with at least 10 characters."
   },
   zh: {
-    kicker: "账户 DNS",
-    title: "登录个人 DNS 控制台",
-    copy: "使用 dquery 本地账户登录。外部 SSO 只绑定到本地用户，不作为主账户体系。",
+    kicker: "dquery 初始化",
+    title: "创建首个系统管理员",
+    copy: "初始化只允许在没有本地用户时执行。首个账户会成为 system_admin。",
     email: "邮箱",
+    displayName: "显示名",
     password: "密码",
-    submit: "登录",
-    back: "返回公共查询",
-    failed: "登录失败，请检查邮箱和密码。",
-    setup: "dquery 尚未初始化，正在转到初始化页面。"
+    submit: "完成初始化",
+    already: "dquery 已初始化，正在转到登录页。",
+    failed: "初始化失败，请使用有效邮箱和至少 10 位密码。"
   }
 };
 
@@ -30,10 +30,11 @@ document.querySelectorAll("[data-i18n]").forEach((node) => {
   if (value) node.textContent = value;
 });
 
-const form = document.querySelector("#login-form");
-const email = document.querySelector("#login-email");
-const password = document.querySelector("#login-password");
-const status = document.querySelector("#login-status");
+const form = document.querySelector("#setup-form");
+const email = document.querySelector("#setup-email");
+const displayName = document.querySelector("#setup-display-name");
+const password = document.querySelector("#setup-password");
+const status = document.querySelector("#setup-status");
 
 function setStatus(message, tone = "") {
   if (!status) return;
@@ -54,12 +55,12 @@ async function api(path, options = {}) {
   return payload;
 }
 
-async function checkSetup() {
+async function checkStatus() {
   try {
     const result = await api("/setup/status");
-    if (!result.initialized) {
-      setStatus(text[lang].setup, "bad");
-      window.location.replace("/setup/");
+    if (result.initialized) {
+      setStatus(text[lang].already, "ok");
+      window.location.replace("/login/");
     }
   } catch {
     setStatus(text[lang].failed, "bad");
@@ -70,9 +71,13 @@ form?.addEventListener("submit", async (event) => {
   event.preventDefault();
   setStatus("", "");
   try {
-    await api("/auth/login", {
+    await api("/setup/init", {
       method: "POST",
-      body: JSON.stringify({ email: email?.value || "", password: password?.value || "" })
+      body: JSON.stringify({
+        email: email?.value || "",
+        display_name: displayName?.value || "",
+        password: password?.value || ""
+      })
     });
     window.location.replace("/console/");
   } catch {
@@ -80,4 +85,4 @@ form?.addEventListener("submit", async (event) => {
   }
 });
 
-checkSetup();
+checkStatus();

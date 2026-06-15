@@ -10,16 +10,17 @@ import (
 )
 
 type Config struct {
-	Server     ServerConfig            `yaml:"server"`
-	Logging    LoggingConfig           `yaml:"logging"`
-	ChinaRules ChinaRulesConfig        `yaml:"china_rules"`
-	Routing    RoutingConfig           `yaml:"routing"`
-	ECS        ECSConfig               `yaml:"ecs"`
-	Cache      CacheConfig             `yaml:"cache"`
-	CNLearning CNLearningConfig        `yaml:"cn_learning"`
-	Account    account.Config          `yaml:"account"`
-	Storage    StorageConfig           `yaml:"storage"`
-	Upstreams  map[string]UpstreamSpec `yaml:"upstreams"`
+	Server         ServerConfig            `yaml:"server"`
+	Logging        LoggingConfig           `yaml:"logging"`
+	ChinaRules     ChinaRulesConfig        `yaml:"china_rules"`
+	Routing        RoutingConfig           `yaml:"routing"`
+	ECS            ECSConfig               `yaml:"ecs"`
+	Cache          CacheConfig             `yaml:"cache"`
+	CNLearning     CNLearningConfig        `yaml:"cn_learning"`
+	RegionalPolicy RegionalPolicyConfig    `yaml:"regional_policy"`
+	Account        account.Config          `yaml:"account"`
+	Storage        StorageConfig           `yaml:"storage"`
+	Upstreams      map[string]UpstreamSpec `yaml:"upstreams"`
 }
 
 type ServerConfig struct {
@@ -80,6 +81,19 @@ type CNLearningConfig struct {
 	Mode     string        `yaml:"mode"`
 	TTLCap   time.Duration `yaml:"ttl_cap"`
 	TTLFloor time.Duration `yaml:"ttl_floor"`
+}
+
+type RegionalPolicyConfig struct {
+	Enabled             bool                    `yaml:"enabled"`
+	ClientCountryHeader string                  `yaml:"client_country_header"`
+	AnonymousDNSQuery   AnonymousDNSQueryPolicy `yaml:"anonymous_dns_query"`
+}
+
+type AnonymousDNSQueryPolicy struct {
+	BlockedCountries []string `yaml:"blocked_countries"`
+	StatusCode       int      `yaml:"status_code"`
+	Reason           string   `yaml:"reason"`
+	BodyMessage      string   `yaml:"body_message"`
 }
 
 type StorageConfig struct {
@@ -196,6 +210,23 @@ func (c *Config) applyDefaults() {
 	}
 	if c.CNLearning.TTLCap == 0 {
 		c.CNLearning.TTLCap = 10 * time.Minute
+	}
+	if c.RegionalPolicy.ClientCountryHeader == "" {
+		c.RegionalPolicy.ClientCountryHeader = "CF-IPCountry"
+	}
+	if c.RegionalPolicy.Enabled {
+		if len(c.RegionalPolicy.AnonymousDNSQuery.BlockedCountries) == 0 {
+			c.RegionalPolicy.AnonymousDNSQuery.BlockedCountries = []string{"CN", "HK", "MO"}
+		}
+		if c.RegionalPolicy.AnonymousDNSQuery.StatusCode == 0 {
+			c.RegionalPolicy.AnonymousDNSQuery.StatusCode = 451
+		}
+		if c.RegionalPolicy.AnonymousDNSQuery.Reason == "" {
+			c.RegionalPolicy.AnonymousDNSQuery.Reason = "anonymous_doh_unavailable_in_region"
+		}
+		if c.RegionalPolicy.AnonymousDNSQuery.BodyMessage == "" {
+			c.RegionalPolicy.AnonymousDNSQuery.BodyMessage = "Anonymous DoH is unavailable in this region. Please use an authenticated resolver profile."
+		}
 	}
 	if c.Account.BaseURL == "" {
 		c.Account.BaseURL = "https://gateway.js.gripe/api/v1/myaccount"

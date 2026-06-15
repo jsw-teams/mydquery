@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -113,13 +114,24 @@ func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth/account/start", a.handleAuthStart)
 	mux.HandleFunc("/auth/account/callback", a.handleAuthCallback)
-	mux.HandleFunc("/api/v1/dquery", a.handleDoH)
+	mux.HandleFunc("/dns-query", a.handleDoH)
+	mux.HandleFunc("/", a.handleRootRoute)
 	mux.HandleFunc("/api/v1/dquery/", a.handleSubpath)
 	mux.HandleFunc("/api/v1/dquery/healthz", a.handleHealthz)
 	mux.HandleFunc("/api/v1/dquery/readyz", a.handleReadyz)
+	mux.HandleFunc("/api/v1/dquery/setup/status", a.handleSetupStatus)
+	mux.HandleFunc("/api/v1/dquery/setup/init", a.handleSetupInit)
 	mux.HandleFunc("/api/v1/dquery/account/client", a.handleAccountClient)
 	mux.HandleFunc("/api/v1/dquery/account/me", a.handleAccountMe)
 	return withCommonHeaders(mux)
+}
+
+func (a *App) handleRootRoute(w http.ResponseWriter, r *http.Request) {
+	if isResolverDoHPath(r.URL.Path) {
+		a.handleDoH(w, r)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not_found", "message": "resource not found", "path": r.URL.Path})
 }
 
 func (a *App) handleSubpath(w http.ResponseWriter, r *http.Request) {
@@ -128,17 +140,20 @@ func (a *App) handleSubpath(w http.ResponseWriter, r *http.Request) {
 		a.handleHealthz(w, r)
 	case "/api/v1/dquery/readyz":
 		a.handleReadyz(w, r)
+	case "/api/v1/dquery/setup/status":
+		a.handleSetupStatus(w, r)
+	case "/api/v1/dquery/setup/init":
+		a.handleSetupInit(w, r)
+	case "/api/v1/dquery/lookup":
+		a.handleFrontendLookup(w, r)
 	case "/api/v1/dquery/account/client":
 		a.handleAccountClient(w, r)
 	case "/api/v1/dquery/account/me":
 		a.handleAccountMe(w, r)
 	case "/api/v1/dquery/":
-		a.handleDoH(w, r)
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not_found", "message": "use /dns-query for anonymous DoH"})
 	default:
 		if a.handleAccountAPI(w, r) {
-			return
-		}
-		if a.handlePersonalDoH(w, r) {
 			return
 		}
 		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not_found", "message": "resource not found", "path": r.URL.Path})
@@ -171,6 +186,57 @@ func (a *App) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
+func (a *App) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
+	writeConsoleCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET, OPTIONS")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method_not_allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "initialized": a.store.localUserCount() > 0})
+}
+
+func (a *App) handleSetupInit(w http.ResponseWriter, r *http.Request) {
+	writeConsoleCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST, OPTIONS")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method_not_allowed"})
+		return
+	}
+	if a.store.localUserCount() > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": "already_initialized"})
+		return
+	}
+	var in struct {
+		Email       string `json:"email"`
+		DisplayName string `json:"display_name"`
+		Password    string `json:"password"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "bad_json"})
+		return
+	}
+	user, err := a.store.createLocalUser(strings.TrimSpace(in.Email), strings.TrimSpace(in.DisplayName), "system_admin", in.Password)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	a.store.ensureDefaultProfile(user)
+	if err := a.createSession(w, r, user); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "session_error"})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "initialized": true, "user": publicUser(user)})
+}
+
 func (a *App) handleAccountClient(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -188,7 +254,7 @@ func (a *App) handleAccountClient(w http.ResponseWriter, r *http.Request) {
 		loginURL = "https://account.js.gripe/login"
 	}
 	if redirectURI == "" {
-		redirectURI = "https://dns.js.gripe/login/"
+		redirectURI = "https://dquery.js.gripe/login/"
 	}
 	scopes := a.cfg.Account.Scopes
 	if len(scopes) == 0 {
@@ -243,104 +309,11 @@ func (a *App) handleAccountMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method_not_allowed"})
-		return
-	}
-	if !a.cfg.Account.Enabled {
-		http.Redirect(w, r, "/login?error=account_disabled", http.StatusFound)
-		return
-	}
-	clientID := strings.TrimSpace(a.cfg.Account.ClientID)
-	if clientID == "" || strings.Contains(clientID, "[") || strings.Contains(clientID, "REPLACE") {
-		http.Redirect(w, r, "/login?error=account_client_not_configured", http.StatusFound)
-		return
-	}
-	loginURL := strings.TrimSpace(a.cfg.Account.LoginURL)
-	if loginURL == "" {
-		loginURL = "https://account.js.gripe/login"
-	}
-	redirectURI := strings.TrimSpace(a.cfg.Account.RedirectURI)
-	if redirectURI == "" {
-		redirectURI = requestOrigin(r) + "/auth/account/callback"
-	}
-	scopes := a.cfg.Account.Scopes
-	if len(scopes) == 0 {
-		scopes = []string{"accounts:read", "identities:resolve"}
-	}
-	state := "st_" + randomHex(16)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "dquery_oauth_state",
-		Value:    state,
-		Path:     "/auth/account",
-		MaxAge:   600,
-		HttpOnly: true,
-		Secure:   secureCookie(r),
-		SameSite: http.SameSiteLaxMode,
-	})
-	u, err := url.Parse(loginURL)
-	if err != nil {
-		http.Redirect(w, r, "/login?error=bad_login_url", http.StatusFound)
-		return
-	}
-	q := u.Query()
-	q.Set("client_id", clientID)
-	q.Set("redirect_uri", redirectURI)
-	q.Set("scope", strings.Join(scopes, " "))
-	q.Set("state", state)
-	q.Set("prompt", "consent")
-	if r.URL.Query().Get("popup") == "1" {
-		q.Set("popup", "1")
-	}
-	u.RawQuery = q.Encode()
-	http.Redirect(w, r, u.String(), http.StatusFound)
+	writeJSON(w, http.StatusGone, map[string]any{"ok": false, "error": "legacy_account_login_removed", "message": "use local dquery login or /auth/sso/{provider}/start"})
 }
 
 func (a *App) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method_not_allowed"})
-		return
-	}
-	if errCode := r.URL.Query().Get("error"); errCode != "" {
-		a.popupHTML(w, false, "/login?error=auth_failed", "账户授权未完成")
-		return
-	}
-	state := r.URL.Query().Get("state")
-	c, err := r.Cookie("dquery_oauth_state")
-	if err != nil || c.Value == "" || state == "" || c.Value != state {
-		a.popupHTML(w, false, "/login?error=state", "登录状态校验失败，请重新打开登录窗口")
-		return
-	}
-	accountSession := r.URL.Query().Get("account_session")
-	if accountSession == "" {
-		a.popupHTML(w, false, "/login?error=no_session", "账户中心未返回有效登录状态")
-		return
-	}
-	user, err := a.account.Me(r.Context(), accountSession)
-	if err != nil {
-		a.popupHTML(w, false, "/login?error=account_error", "统一账户校验失败，请稍后重试")
-		return
-	}
-	if user.UserType == "" {
-		user.UserType = user.Role
-	}
-	a.store.ensureDefaultProfile(user)
-	if err := a.createSession(w, r, user); err != nil {
-		a.popupHTML(w, false, "/login?error=session", "DNS 控制台会话创建失败")
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     "dquery_oauth_state",
-		Value:    "",
-		Path:     "/auth/account",
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   secureCookie(r),
-		SameSite: http.SameSiteLaxMode,
-	})
-	a.popupHTML(w, true, "/console/", "登录成功")
+	writeJSON(w, http.StatusGone, map[string]any{"ok": false, "error": "legacy_account_callback_removed", "message": "account_session callback is not accepted by dquery"})
 }
 
 func (a *App) popupHTML(w http.ResponseWriter, ok bool, redirectTo, message string) {
@@ -372,8 +345,19 @@ type accountSession struct {
 	ExpiresAt time.Time
 }
 
+type localUser struct {
+	ID          string `json:"id"`
+	Email       string `json:"email"`
+	DisplayName string `json:"display_name"`
+	Role        string `json:"role"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
 type dnsProfile struct {
 	ID                    string `json:"id"`
+	ResolverUUID          string `json:"resolver_uuid"`
 	OwnerUserID           string `json:"owner_user_id"`
 	Name                  string `json:"name"`
 	Enabled               bool   `json:"enabled"`
@@ -449,6 +433,8 @@ type blockSettings struct {
 	UpdatedAt    string `json:"updated_at"`
 }
 
+const accountSchemaVersion = 4
+
 func newAccountStore(dbPath string) (*accountStore, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0750); err != nil {
 		return nil, fmt.Errorf("create storage dir: %w", err)
@@ -466,9 +452,32 @@ func newAccountStore(dbPath string) (*accountStore, error) {
 }
 
 func (s *accountStore) migrate() error {
+	if err := s.resetManagedTablesForOldSchema(accountSchemaVersion); err != nil {
+		return err
+	}
 	statements := []string{
+		`CREATE TABLE IF NOT EXISTS dquery_schema_metadata (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS dquery_users (
+			id TEXT PRIMARY KEY,
+			email TEXT NOT NULL UNIQUE,
+			display_name TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT 'member',
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS local_passwords (
+			user_id TEXT PRIMARY KEY,
+			password_hash TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY(user_id) REFERENCES dquery_users(id) ON DELETE CASCADE
+		)`,
 		`CREATE TABLE IF NOT EXISTS dns_profiles (
 			id TEXT PRIMARY KEY,
+			resolver_uuid TEXT NOT NULL UNIQUE,
 			owner_user_id TEXT NOT NULL,
 			name TEXT NOT NULL,
 			enabled INTEGER NOT NULL DEFAULT 1,
@@ -478,6 +487,7 @@ func (s *accountStore) migrate() error {
 			updated_at TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_dns_profiles_owner ON dns_profiles(owner_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_dns_profiles_resolver_uuid ON dns_profiles(resolver_uuid)`,
 		`CREATE TABLE IF NOT EXISTS dns_rules (
 			id TEXT PRIMARY KEY,
 			profile_id TEXT NOT NULL,
@@ -598,11 +608,77 @@ func (s *accountStore) migrate() error {
 			return err
 		}
 	}
-	_, _ = s.db.Exec(`ALTER TABLE dns_rule_sets ADD COLUMN block_page_url TEXT NOT NULL DEFAULT ''`)
 	if err := s.ensureKnownRuleSets(); err != nil {
 		return err
 	}
+	_, err := s.db.Exec(`INSERT INTO dquery_schema_metadata (key, value) VALUES ('account_schema_version', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, strconv.Itoa(accountSchemaVersion))
+	return err
+}
+
+func (s *accountStore) resetManagedTablesForOldSchema(currentVersion int) error {
+	version, ok, err := s.storedSchemaVersion()
+	if err != nil {
+		return err
+	}
+	if ok && version >= currentVersion {
+		return nil
+	}
+	if !ok && !s.hasManagedTables() {
+		return nil
+	}
+	for _, table := range []string{
+		"account_sessions",
+		"local_passwords",
+		"dquery_users",
+		"dns_domain_actions",
+		"dns_user_rule_set_preferences",
+		"dquery_known_rule_domains",
+		"dquery_known_rule_sets",
+		"dns_block_settings",
+		"dns_query_logs",
+		"dns_rule_sets",
+		"dns_profile_tokens",
+		"dns_rules",
+		"dns_profiles",
+		"dquery_schema_metadata",
+	} {
+		if _, err := s.db.Exec(`DROP TABLE IF EXISTS ` + table); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (s *accountStore) storedSchemaVersion() (int, bool, error) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM dquery_schema_metadata WHERE key = 'account_schema_version'`).Scan(&value)
+	if err == nil {
+		version, convErr := strconv.Atoi(strings.TrimSpace(value))
+		if convErr != nil {
+			return 0, true, nil
+		}
+		return version, true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) || isMissingTableError(err) {
+		return 0, false, nil
+	}
+	return 0, false, err
+}
+
+func (s *accountStore) hasManagedTables() bool {
+	for _, table := range []string{"dquery_users", "local_passwords", "dns_profiles", "dns_rules", "dns_profile_tokens", "dns_rule_sets", "account_sessions"} {
+		var name string
+		err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name)
+		if err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func isMissingTableError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table")
 }
 
 func (a *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) bool {
@@ -619,12 +695,12 @@ func (a *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) bool {
 		a.handleAccountLogin(w, r)
 		return true
 	}
-	if path == "/logout" && r.Method == http.MethodPost {
+	if (path == "/logout" || path == "/auth/logout") && r.Method == http.MethodPost {
 		a.clearSession(w, r)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return true
 	}
-	if path != "/session" && path != "/settings" && path != "/rulesets" && path != "/domain-rules" && path != "/profiles" && path != "/logs" && path != "/logs/stats" && !strings.HasPrefix(path, "/rulesets/") && !strings.HasPrefix(path, "/domain-rules/") && !strings.HasPrefix(path, "/profiles/") {
+	if path != "/session" && path != "/auth/me" && path != "/settings" && path != "/rulesets" && path != "/domain-rules" && path != "/profiles" && path != "/logs" && path != "/logs/stats" && !strings.HasPrefix(path, "/rulesets/") && !strings.HasPrefix(path, "/domain-rules/") && !strings.HasPrefix(path, "/profiles/") {
 		return false
 	}
 	user, ok := a.requireAccountUser(w, r)
@@ -634,7 +710,7 @@ func (a *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) bool {
 	a.store.ensureDefaultProfile(user)
 
 	switch {
-	case path == "/session" && r.Method == http.MethodGet:
+	case (path == "/session" || path == "/auth/me") && r.Method == http.MethodGet:
 		a.handleSession(w, user)
 	case path == "/settings" && r.Method == http.MethodGet:
 		a.handleSettings(w, user)
@@ -681,8 +757,21 @@ func writeConsoleCORS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Max-Age", "600")
 }
 
+func writeDoHCORS(w http.ResponseWriter, r *http.Request) {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if !isAllowedConsoleOrigin(origin) {
+		return
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Vary", "Origin")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Authorization, X-ECS")
+	w.Header().Set("Access-Control-Expose-Headers", "Cache-Control, Link, X-DQuery-Route, X-DQuery-Upstream, X-DQuery-Selected-ECS, X-DQuery-ECS-Source, X-DQuery-Cache")
+	w.Header().Set("Access-Control-Max-Age", "86400")
+}
+
 func isAllowedConsoleOrigin(origin string) bool {
-	if origin == "https://dns.js.gripe" {
+	if origin == "https://dquery.js.gripe" {
 		return true
 	}
 	u, err := url.Parse(origin)
@@ -696,10 +785,6 @@ func isAllowedConsoleOrigin(origin string) bool {
 }
 
 func (a *App) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
-	if !a.cfg.Account.Enabled {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "account_integration_disabled"})
-		return
-	}
 	var in struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -708,56 +793,26 @@ func (a *App) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "bad_json"})
 		return
 	}
-	result, err := a.account.Login(r.Context(), in.Email, in.Password)
+	user, err := a.store.authenticateLocalUser(in.Email, in.Password)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "bad_credentials"})
 		return
 	}
-	if result.User.UserType == "" {
-		result.User.UserType = result.User.Role
+	a.store.ensureDefaultProfile(user)
+	if err := a.createSession(w, r, user); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "session_error"})
+		return
 	}
-	a.store.ensureDefaultProfile(result.User)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"token":      result.Token,
-		"expires_at": result.ExpiresAt,
-		"user": map[string]any{
-			"id":           result.User.ID,
-			"email":        result.User.Email,
-			"display_name": result.User.DisplayName,
-			"role":         result.User.Role,
-			"user_type":    result.User.UserType,
-		},
-		"capabilities": dqueryCapabilities(result.User),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": publicUser(user), "capabilities": dqueryCapabilities(user)})
 }
 
 func (a *App) requireAccountUser(w http.ResponseWriter, r *http.Request) (account.User, bool) {
 	var zero account.User
-	if !a.cfg.Account.Enabled {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "account_integration_disabled"})
-		return zero, false
-	}
 	if session, err := a.readSession(r); err == nil {
 		return session.User, true
 	}
-	user, err := a.account.Me(r.Context(), account.BearerToken(r))
-	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{
-			"ok":        false,
-			"error":     "invalid_account_session",
-			"login_url": "https://account.js.gripe/login",
-		})
-		return zero, false
-	}
-	if user.UserType == "" {
-		user.UserType = user.Role
-	}
-	if strings.EqualFold(user.Status, "disabled") {
-		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "account_disabled", "support_email": "helper@js.gripe"})
-		return zero, false
-	}
-	return user, true
+	writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated", "login_url": "/login/"})
+	return zero, false
 }
 
 func hashSession(raw string) string {
@@ -774,7 +829,7 @@ func sharedCookieDomain(r *http.Request) string {
 	if idx := strings.Index(host, ":"); idx >= 0 {
 		host = host[:idx]
 	}
-	if host == "dns.js.gripe" || host == "gateway.js.gripe" {
+	if host == "dquery.js.gripe" || host == "dns.js.gripe" || host == "gateway.js.gripe" {
 		return ".js.gripe"
 	}
 	return ""
@@ -791,7 +846,7 @@ func requestOrigin(r *http.Request) string {
 	}
 	host := r.Host
 	if host == "" {
-		host = "dns.js.gripe"
+		host = "dquery.js.gripe"
 	}
 	return proto + "://" + host
 }
@@ -806,6 +861,7 @@ func (s *accountStore) ensureDefaultProfile(user account.User) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	profile := dnsProfile{
 		ID:                    "prof_" + randomHex(8),
+		ResolverUUID:          newUUID(),
 		OwnerUserID:           user.ID,
 		Name:                  "Default profile",
 		Enabled:               true,
@@ -814,8 +870,8 @@ func (s *accountStore) ensureDefaultProfile(user account.User) {
 		CreatedAt:             now,
 		UpdatedAt:             now,
 	}
-	_, _ = s.db.Exec(`INSERT INTO dns_profiles (id, owner_user_id, name, enabled, default_route, default_upstream_policy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		profile.ID, profile.OwnerUserID, profile.Name, boolInt(profile.Enabled), profile.DefaultRoute, profile.DefaultUpstreamPolicy, profile.CreatedAt, profile.UpdatedAt)
+	_, _ = s.db.Exec(`INSERT INTO dns_profiles (id, resolver_uuid, owner_user_id, name, enabled, default_route, default_upstream_policy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		profile.ID, profile.ResolverUUID, profile.OwnerUserID, profile.Name, boolInt(profile.Enabled), profile.DefaultRoute, profile.DefaultUpstreamPolicy, profile.CreatedAt, profile.UpdatedAt)
 }
 
 func (a *App) createSession(w http.ResponseWriter, r *http.Request, user account.User) error {
@@ -873,6 +929,137 @@ func (a *App) readSession(r *http.Request) (*accountSession, error) {
 	return &s, nil
 }
 
+func (s *accountStore) localUserCount() int {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM dquery_users`).Scan(&count); err != nil {
+		return 0
+	}
+	return count
+}
+
+func (s *accountStore) createLocalUser(email, displayName, role, password string) (account.User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	displayName = strings.TrimSpace(displayName)
+	if email == "" || !strings.Contains(email, "@") {
+		return account.User{}, fmt.Errorf("invalid_email")
+	}
+	if len(password) < 10 {
+		return account.User{}, fmt.Errorf("password_too_short")
+	}
+	role = normalizeChoice(role, "member", "system_admin", "operator", "auditor", "member")
+	if displayName == "" {
+		displayName = email
+	}
+	hash, err := hashPassword(password)
+	if err != nil {
+		return account.User{}, fmt.Errorf("password_hash_error")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	user := account.User{ID: newUUID(), Email: email, DisplayName: displayName, Role: role, UserType: role, Status: "active", Capabilities: map[string]any{}}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return account.User{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO dquery_users (id, email, display_name, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+		user.ID, user.Email, user.DisplayName, user.Role, now, now); err != nil {
+		return account.User{}, err
+	}
+	if _, err := tx.Exec(`INSERT INTO local_passwords (user_id, password_hash, updated_at) VALUES (?, ?, ?)`, user.ID, hash, now); err != nil {
+		return account.User{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return account.User{}, err
+	}
+	return user, nil
+}
+
+func (s *accountStore) authenticateLocalUser(email, password string) (account.User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	var user account.User
+	var passwordHash string
+	err := s.db.QueryRow(`SELECT u.id, u.email, u.display_name, u.role, u.status, p.password_hash
+		FROM dquery_users u
+		JOIN local_passwords p ON p.user_id = u.id
+		WHERE u.email = ?`, email).Scan(&user.ID, &user.Email, &user.DisplayName, &user.Role, &user.Status, &passwordHash)
+	if err != nil {
+		return account.User{}, err
+	}
+	if !strings.EqualFold(user.Status, "active") {
+		return account.User{}, fmt.Errorf("user_disabled")
+	}
+	if !verifyPassword(passwordHash, password) {
+		return account.User{}, fmt.Errorf("bad_password")
+	}
+	user.UserType = user.Role
+	user.Capabilities = map[string]any{}
+	return user, nil
+}
+
+func publicUser(user account.User) map[string]any {
+	return map[string]any{
+		"id":           user.ID,
+		"email":        user.Email,
+		"display_name": user.DisplayName,
+		"role":         user.Role,
+		"user_type":    user.UserType,
+	}
+}
+
+func hashPassword(password string) (string, error) {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+	iterations := 210000
+	sum := pbkdf2SHA256([]byte(password), salt, iterations, 32)
+	return fmt.Sprintf("pbkdf2-sha256$%d$%s$%s", iterations, base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(sum)), nil
+}
+
+func verifyPassword(encoded, password string) bool {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 4 || parts[0] != "pbkdf2-sha256" {
+		return false
+	}
+	iterations, err := strconv.Atoi(parts[1])
+	if err != nil || iterations < 100000 {
+		return false
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return false
+	}
+	want, err := base64.RawStdEncoding.DecodeString(parts[3])
+	if err != nil {
+		return false
+	}
+	got := pbkdf2SHA256([]byte(password), salt, iterations, len(want))
+	return hmac.Equal(got, want)
+}
+
+func pbkdf2SHA256(password, salt []byte, iterations, keyLen int) []byte {
+	hLen := sha256.Size
+	numBlocks := (keyLen + hLen - 1) / hLen
+	out := make([]byte, 0, numBlocks*hLen)
+	for block := 1; block <= numBlocks; block++ {
+		mac := hmac.New(sha256.New, password)
+		mac.Write(salt)
+		mac.Write([]byte{byte(block >> 24), byte(block >> 16), byte(block >> 8), byte(block)})
+		u := mac.Sum(nil)
+		t := append([]byte(nil), u...)
+		for i := 1; i < iterations; i++ {
+			mac = hmac.New(sha256.New, password)
+			mac.Write(u)
+			u = mac.Sum(nil)
+			for j := range t {
+				t[j] ^= u[j]
+			}
+		}
+		out = append(out, t...)
+	}
+	return out[:keyLen]
+}
+
 func (a *App) clearSession(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie("dquery_session"); err == nil {
 		_, _ = a.store.db.Exec(`DELETE FROM account_sessions WHERE session_hash = ?`, hashSession(c.Value))
@@ -895,6 +1082,12 @@ func (s *accountStore) defaultProfileID(ownerID string) (string, error) {
 	return id, err
 }
 
+func (s *accountStore) ownerIDForResolverUUID(resolverUUID string) (string, error) {
+	var ownerID string
+	err := s.db.QueryRow(`SELECT owner_user_id FROM dns_profiles WHERE resolver_uuid = ? AND enabled = 1`, resolverUUID).Scan(&ownerID)
+	return ownerID, err
+}
+
 func (s *accountStore) getBlockSettings(ownerID string) (blockSettings, error) {
 	var settings blockSettings
 	err := s.db.QueryRow(`SELECT owner_user_id, mode, block_page_url, updated_at FROM dns_block_settings WHERE owner_user_id = ?`, ownerID).Scan(&settings.OwnerUserID, &settings.Mode, &settings.BlockPageURL, &settings.UpdatedAt)
@@ -912,6 +1105,11 @@ func (s *accountStore) upsertBlockSettings(settings blockSettings) error {
 }
 
 func (a *App) handleSession(w http.ResponseWriter, user account.User) {
+	profiles, _ := a.store.listProfiles(user.ID)
+	var defaultResolverUUID string
+	if len(profiles) > 0 {
+		defaultResolverUUID = profiles[0].ResolverUUID
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true,
 		"user": map[string]any{
@@ -921,8 +1119,10 @@ func (a *App) handleSession(w http.ResponseWriter, user account.User) {
 			"role":         user.Role,
 			"user_type":    user.UserType,
 		},
-		"capabilities": dqueryCapabilities(user),
-		"initialized":  true,
+		"capabilities":          dqueryCapabilities(user),
+		"default_resolver_uuid": defaultResolverUUID,
+		"profiles":              profiles,
+		"initialized":           true,
 	})
 }
 
@@ -1137,7 +1337,7 @@ func (a *App) handleCreateProfile(w http.ResponseWriter, r *http.Request, user a
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	profile := dnsProfile{
-		ID: "prof_" + randomHex(8), OwnerUserID: user.ID, Name: in.Name, Enabled: true,
+		ID: "prof_" + randomHex(8), ResolverUUID: newUUID(), OwnerUserID: user.ID, Name: in.Name, Enabled: true,
 		DefaultRoute:          normalizeChoice(in.DefaultRoute, "auto", "auto", "cn", "global"),
 		DefaultUpstreamPolicy: normalizeChoice(in.DefaultUpstreamPolicy, "balanced", "balanced", "privacy", "low_latency"),
 		CreatedAt:             now, UpdatedAt: now,
@@ -1321,7 +1521,7 @@ func (s *accountStore) userOwnsProfile(ownerID, profileID string) bool {
 }
 
 func (s *accountStore) listProfiles(ownerID string) ([]dnsProfile, error) {
-	rows, err := s.db.Query(`SELECT id, owner_user_id, name, enabled, default_route, default_upstream_policy, created_at, updated_at FROM dns_profiles WHERE owner_user_id = ? ORDER BY created_at`, ownerID)
+	rows, err := s.db.Query(`SELECT id, resolver_uuid, owner_user_id, name, enabled, default_route, default_upstream_policy, created_at, updated_at FROM dns_profiles WHERE owner_user_id = ? ORDER BY created_at`, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -1330,7 +1530,7 @@ func (s *accountStore) listProfiles(ownerID string) ([]dnsProfile, error) {
 	for rows.Next() {
 		var profile dnsProfile
 		var enabled int
-		if err := rows.Scan(&profile.ID, &profile.OwnerUserID, &profile.Name, &enabled, &profile.DefaultRoute, &profile.DefaultUpstreamPolicy, &profile.CreatedAt, &profile.UpdatedAt); err != nil {
+		if err := rows.Scan(&profile.ID, &profile.ResolverUUID, &profile.OwnerUserID, &profile.Name, &enabled, &profile.DefaultRoute, &profile.DefaultUpstreamPolicy, &profile.CreatedAt, &profile.UpdatedAt); err != nil {
 			return nil, err
 		}
 		profile.Enabled = enabled != 0
@@ -1340,8 +1540,8 @@ func (s *accountStore) listProfiles(ownerID string) ([]dnsProfile, error) {
 }
 
 func (s *accountStore) insertProfile(profile dnsProfile) error {
-	_, err := s.db.Exec(`INSERT INTO dns_profiles (id, owner_user_id, name, enabled, default_route, default_upstream_policy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		profile.ID, profile.OwnerUserID, profile.Name, boolInt(profile.Enabled), profile.DefaultRoute, profile.DefaultUpstreamPolicy, profile.CreatedAt, profile.UpdatedAt)
+	_, err := s.db.Exec(`INSERT INTO dns_profiles (id, resolver_uuid, owner_user_id, name, enabled, default_route, default_upstream_policy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		profile.ID, profile.ResolverUUID, profile.OwnerUserID, profile.Name, boolInt(profile.Enabled), profile.DefaultRoute, profile.DefaultUpstreamPolicy, profile.CreatedAt, profile.UpdatedAt)
 	return err
 }
 
@@ -1905,19 +2105,75 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
+func newUUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("00000000-0000-4000-8000-%012x", time.Now().UnixNano()&0xffffffffffff)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4],
+		b[4:6],
+		b[6:8],
+		b[8:10],
+		b[10:16],
+	)
+}
+
 func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/api/v1/dquery" && r.URL.Path != "/api/v1/dquery/" && !isPersonalDoHPath(r.URL.Path) {
+	if r.URL.Path != "/dns-query" && !isResolverDoHPath(r.URL.Path) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not_found", "message": "resource not found", "path": r.URL.Path})
 		return
 	}
+	a.handleDoHQuery(w, r, false)
+}
+
+func (a *App) handleFrontendLookup(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/v1/dquery/lookup" {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not_found", "message": "resource not found", "path": r.URL.Path})
+		return
+	}
+	a.handleDoHQuery(w, r, true)
+}
+
+func (a *App) handleDoHQuery(w http.ResponseWriter, r *http.Request, skipRegionalPolicy bool) {
+	writeDoHCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		w.Header().Set("Allow", "GET, POST")
+		w.Header().Set("Allow", "GET, POST, OPTIONS")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method_not_allowed"})
 		return
 	}
 	if err := validateRequest(r); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_request", "message": err.Error()})
 		return
+	}
+	resolverUUID := resolverUUIDFromPath(r.URL.Path)
+	personalOwnerID := ""
+	if resolverUUID == "" && !skipRegionalPolicy && a.region451Blocked(r) {
+		w.Header().Set("Link", `<https://dquery.js.gripe/legal/regional-policy>; rel="blocked-by"`)
+		writeJSON(w, a.regional451StatusCode(), map[string]any{
+			"ok":      false,
+			"error":   a.regional451Reason(),
+			"message": a.regional451Message(),
+		})
+		return
+	}
+	if resolverUUID != "" {
+		ownerID, err := a.store.ownerIDForResolverUUID(resolverUUID)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "resolver_not_found"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage_error"})
+			return
+		}
+		personalOwnerID = ownerID
 	}
 
 	queryBytes, err := a.readQueryBytes(r)
@@ -1942,13 +2198,7 @@ func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
 	if qtype == "" {
 		qtype = fmt.Sprintf("TYPE%d", question.Qtype)
 	}
-	personalOwnerID := personalUserIDFromPath(r.URL.Path)
 	if personalOwnerID != "" {
-		if !a.store.ownerExists(personalOwnerID) {
-			response := nxdomainResponse(&query)
-			a.writeDNSResponse(w, r, http.StatusOK, response, 60, debugHeaders{QName: qname, QType: qtype, CacheStatus: "BYPASS"})
-			return
-		}
 		if action, ok := a.store.domainActionFor(personalOwnerID, qname); ok {
 			if action.Action == "block" {
 				response := nxdomainResponse(&query)
@@ -1988,7 +2238,7 @@ func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
 
 	cacheKey := ""
 	if a.cache != nil {
-		cacheKey = dnsCacheKey(routeName, routeCfg.Upstream, selectedECS, &query)
+		cacheKey = dnsCacheKey(cacheNamespace(resolverUUID), routeName, routeCfg.Upstream, selectedECS, &query)
 		if cached, ok := a.cache.GetFresh(cacheKey, time.Now()); ok {
 			cached = responseWithQueryID(cached, query.Id)
 			ttl := responseTTL(cached, a.cfg.Cache.DefaultPositiveTTL, a.cfg.Cache.NegativeTTL, a.cfg.Cache.MinPositiveTTL, a.cfg.Cache.MaxPositiveTTL)
@@ -2043,11 +2293,55 @@ func (a *App) handleDoH(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handlePersonalDoH(w http.ResponseWriter, r *http.Request) bool {
-	if isPersonalDoHPath(r.URL.Path) {
+	if isResolverDoHPath(r.URL.Path) {
 		a.handleDoH(w, r)
 		return true
 	}
 	return false
+}
+
+func (a *App) region451Blocked(r *http.Request) bool {
+	if a == nil || a.cfg == nil || !a.cfg.RegionalPolicy.Enabled {
+		return false
+	}
+	header := strings.TrimSpace(a.cfg.RegionalPolicy.ClientCountryHeader)
+	if header == "" {
+		header = "CF-IPCountry"
+	}
+	country := strings.ToUpper(strings.TrimSpace(r.Header.Get(header)))
+	if country == "" {
+		return false
+	}
+	for _, blocked := range a.cfg.RegionalPolicy.AnonymousDNSQuery.BlockedCountries {
+		if country == strings.ToUpper(strings.TrimSpace(blocked)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) regional451StatusCode() int {
+	status := a.cfg.RegionalPolicy.AnonymousDNSQuery.StatusCode
+	if status == 0 {
+		return http.StatusUnavailableForLegalReasons
+	}
+	return status
+}
+
+func (a *App) regional451Reason() string {
+	reason := strings.TrimSpace(a.cfg.RegionalPolicy.AnonymousDNSQuery.Reason)
+	if reason == "" {
+		return "anonymous_doh_unavailable_in_region"
+	}
+	return reason
+}
+
+func (a *App) regional451Message() string {
+	message := strings.TrimSpace(a.cfg.RegionalPolicy.AnonymousDNSQuery.BodyMessage)
+	if message == "" {
+		return "Anonymous DoH is unavailable in this region. Please use an authenticated resolver profile."
+	}
+	return message
 }
 
 func nxdomainResponse(query *dns.Msg) []byte {
@@ -2173,17 +2467,35 @@ func lookupRedirectTargetIPs(ctx context.Context, target string) []net.IP {
 	return ips
 }
 
-func isPersonalDoHPath(path string) bool {
-	tail := strings.Trim(strings.TrimPrefix(path, "/api/v1/dquery/"), "/")
-	return tail != "" && !strings.Contains(tail, "/") && strings.HasPrefix(tail, "usr_")
+func isResolverDoHPath(path string) bool {
+	return resolverUUIDFromPath(path) != ""
 }
 
-func personalUserIDFromPath(path string) string {
-	tail := strings.Trim(strings.TrimPrefix(path, "/api/v1/dquery/"), "/")
-	if tail != "" && !strings.Contains(tail, "/") && strings.HasPrefix(tail, "usr_") {
-		return tail
+func resolverUUIDFromPath(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 2 && parts[0] == "dns-query" && isUUID(parts[1]) {
+		return strings.ToLower(parts[1])
 	}
 	return ""
+}
+
+func isUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, ch := range value {
+		switch i {
+		case 8, 13, 18, 23:
+			if ch != '-' {
+				return false
+			}
+		default:
+			if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (a *App) logPersonalQuery(ownerID, qname, qtype, action, ruleSetName, clientIP string) {
@@ -2390,8 +2702,16 @@ func decodeDNSQueryParam(encoded string) ([]byte, error) {
 	return nil, base64.CorruptInputError(0)
 }
 
-func dnsCacheKey(routeName, upstreamName, selectedECS string, query *dns.Msg) string {
+func cacheNamespace(resolverUUID string) string {
+	if resolverUUID == "" {
+		return "public"
+	}
+	return "resolver:" + strings.ToLower(resolverUUID)
+}
+
+func dnsCacheKey(namespace, routeName, upstreamName, selectedECS string, query *dns.Msg) string {
 	parts := []string{
+		namespace,
 		routeName,
 		upstreamName,
 		selectedECS,
@@ -2493,9 +2813,22 @@ func (a *App) writeDNSResponse(w http.ResponseWriter, r *http.Request, status in
 	if dbg.CacheStatus != "" {
 		w.Header().Set("X-DQuery-Cache", dbg.CacheStatus)
 	}
-	w.Header().Set("Cache-Control", "no-store")
+	if status == http.StatusOK && cacheStatusMayBeShared(dbg.CacheStatus) {
+		w.Header().Set("Cache-Control", buildCacheControl(a.cfg.Cache, ttl))
+	} else {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	w.WriteHeader(status)
 	_, _ = w.Write(payload)
+}
+
+func cacheStatusMayBeShared(status string) bool {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "HIT", "STALE":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildCacheControl(cfg config.CacheConfig, ttl time.Duration) string {

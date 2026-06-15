@@ -64,6 +64,17 @@ try {
     if (indexMetrics.widthOverflow) failures.push(`${viewport.name}: public page horizontal overflow`);
     if (!indexMetrics.cssLoaded) failures.push(`${viewport.name}: public page css not loaded`);
 
+    let authorizedConsole = false;
+    await page.route("**/api/v1/dquery/setup/status", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, initialized: true })
+    }));
+    await page.route("**/api/v1/dquery/auth/login", (route) => {
+      authorizedConsole = true;
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, user: { id: "user_test", email: "test@js.gripe", display_name: "Test", role: "member", user_type: "member" }, capabilities: {} }) });
+    });
+
     await page.goto(`${origin}/login/`, { waitUntil: "networkidle" });
     const loginMetrics = await page.evaluate(() => ({
       hasLogin: Boolean(document.querySelector(".login-card")?.getBoundingClientRect().height),
@@ -79,46 +90,39 @@ try {
     if (loginMetrics.hasReadyText) failures.push(`${viewport.name}: login page leaked ready debug text`);
     if (loginMetrics.backLinkTop <= loginMetrics.loginButtonBottom) failures.push(`${viewport.name}: public lookup link is on the same row as login button`);
     if (loginMetrics.widthOverflow) failures.push(`${viewport.name}: login horizontal overflow`);
-    const popupPromise = page.waitForEvent("popup");
-    await page.getByRole("button", { name: /打开登录|Open sign-in/ }).click();
-    const popup = await popupPromise;
-    await popup.waitForLoadState("domcontentloaded");
-    const popupURL = new URL(popup.url());
-    if (popupURL.origin !== origin || popupURL.pathname !== "/auth/account/start" || popupURL.searchParams.get("popup") !== "1") {
-      failures.push(`${viewport.name}: login popup did not open dquery auth start`);
-    }
-    await popup.close();
+    await page.locator("#login-form").getByLabel(/邮箱|Email/).fill("test@js.gripe");
+    await page.locator("#login-form").getByLabel(/密码|Password/).fill("ChangeMe123!");
 
-    let authorizedConsole = false;
-    await page.route("https://gateway.js.gripe/api/v1/dquery/session", (route) => route.fulfill({
+    authorizedConsole = false;
+    await page.route("**/api/v1/dquery/session", (route) => route.fulfill({
       status: authorizedConsole ? 200 : 401,
       contentType: "application/json",
       body: JSON.stringify(authorizedConsole
-        ? { ok: true, user: { id: "usr_test", email: "test@js.gripe", display_name: "Test", role: "member", user_type: "member" }, capabilities: {}, initialized: true }
+        ? { ok: true, user: { id: "user_test", email: "test@js.gripe", display_name: "Test", role: "member", user_type: "member" }, capabilities: {}, default_resolver_uuid: "550e8400-e29b-41d4-a716-446655440000", profiles: [{ resolver_uuid: "550e8400-e29b-41d4-a716-446655440000" }], initialized: true }
         : { ok: false, error: "invalid_account_session" })
     }));
-    await page.route("https://gateway.js.gripe/api/v1/dquery/settings", async (route) => {
+    await page.route("**/api/v1/dquery/settings", async (route) => {
       if (route.request().method() === "PATCH") {
-        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, settings: { owner_user_id: "usr_test", mode: "block_page", block_page_url: "https://dns.js.gripe/blocked", updated_at: "2026-05-09T00:00:00Z" } }) });
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, settings: { owner_user_id: "user_test", mode: "block_page", block_page_url: "https://dquery.js.gripe/blocked", updated_at: "2026-05-09T00:00:00Z" } }) });
       }
-      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, settings: { owner_user_id: "usr_test", mode: "nxdomain", block_page_url: "", updated_at: "" } }) });
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, settings: { owner_user_id: "user_test", mode: "nxdomain", block_page_url: "", updated_at: "" } }) });
     });
-    await page.route("https://gateway.js.gripe/api/v1/dquery/rulesets", (route) => {
+    await page.route("**/api/v1/dquery/rulesets", (route) => {
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, rulesets: [{ id: "hagezi_multi_normal", name: "HaGeZi Multi NORMAL", source_url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/multi.txt", status: "synced", enabled: false, domain_count: 123456, last_sync_at: "2026-05-09T00:00:00Z" }] }) });
     });
-    await page.route("https://gateway.js.gripe/api/v1/dquery/rulesets/hagezi_multi_normal", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, ruleset: { id: "hagezi_multi_normal", name: "HaGeZi Multi NORMAL", source_url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/multi.txt", status: "synced", enabled: true, domain_count: 123456, last_sync_at: "2026-05-09T00:00:00Z" } }) }));
-    await page.route("https://gateway.js.gripe/api/v1/dquery/domain-rules", (route) => {
+    await page.route("**/api/v1/dquery/rulesets/hagezi_multi_normal", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, ruleset: { id: "hagezi_multi_normal", name: "HaGeZi Multi NORMAL", source_url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/multi.txt", status: "synced", enabled: true, domain_count: 123456, last_sync_at: "2026-05-09T00:00:00Z" } }) }));
+    await page.route("**/api/v1/dquery/domain-rules", (route) => {
       if (route.request().method() === "POST") {
         return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ ok: true, rule: { id: "act_new" } }) });
       }
-      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, rules: [{ id: "act_test", owner_user_id: "usr_test", domain: "ads.example.com", match_type: "domain_suffix", action: "allow", enabled: true, created_at: "2026-05-09T00:00:00Z", updated_at: "2026-05-09T00:00:00Z" }] }) });
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, rules: [{ id: "act_test", owner_user_id: "user_test", domain: "ads.example.com", match_type: "domain_suffix", action: "allow", enabled: true, created_at: "2026-05-09T00:00:00Z", updated_at: "2026-05-09T00:00:00Z" }] }) });
     });
-    await page.route("https://gateway.js.gripe/api/v1/dquery/domain-rules/act_test", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
-    await page.route(/https:\/\/gateway\.js\.gripe\/api\/v1\/dquery\/logs.*/, (route) => {
+    await page.route("**/api/v1/dquery/domain-rules/act_test", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
+    await page.route(/.*\/api\/v1\/dquery\/logs.*/, (route) => {
       if (route.request().method() === "DELETE") {
         return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
       }
-      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, logs: [{ id: "log_test", owner_user_id: "usr_test", qname: "example.com", qtype: "A", action: "resolve", created_at: "2026-05-09T00:00:00Z" }] }) });
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, logs: [{ id: "log_test", owner_user_id: "user_test", qname: "example.com", qtype: "A", action: "resolve", created_at: "2026-05-09T00:00:00Z" }] }) });
     });
     await page.goto(`${origin}/console/`, { waitUntil: "networkidle" });
     if (!page.url().includes("/login")) failures.push(`${viewport.name}: anonymous console did not redirect to login`);
@@ -136,7 +140,7 @@ try {
     await page.getByRole("button", { name: /删除|Delete/ }).first().click();
     await page.getByRole("button", { name: /拦截行为|Blocking/ }).click();
     await page.getByRole("button", { name: /定向到目标|Redirect to target/ }).click();
-    await page.fill("#block-page-url", "https://dns.js.gripe/blocked");
+    await page.fill("#block-page-url", "https://dquery.js.gripe/blocked");
     await page.getByRole("button", { name: /保存拦截行为|Save behavior/ }).click();
     await page.getByRole("button", { name: /查询日志|Logs/ }).first().click();
     await page.fill("#log-query", "example.com");

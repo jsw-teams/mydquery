@@ -1,17 +1,17 @@
 export function GET() {
   return new Response(
-    `# dns.js.gripe
+    `# dquery.js.gripe
 
-dns.js.gripe is a public DNS-over-HTTPS query console.
+dquery.js.gripe is a public DNS-over-HTTPS query console.
 
 Primary pages:
-- https://dns.js.gripe/
-- https://dns.js.gripe/help/
-- https://dns.js.gripe/en/
-- https://dns.js.gripe/en/help/
+- https://dquery.js.gripe/
+- https://dquery.js.gripe/help/
+- https://dquery.js.gripe/en/
+- https://dquery.js.gripe/en/help/
 
 Public DoH endpoint:
-- https://gateway.js.gripe/api/v1/dquery
+- https://dquery.js.gripe/dns-query
 `,
     {
       headers: {

@@ -3,11 +3,11 @@ import dqueryScript from "../scripts/dquery.js?url";
 
 const { lang = "zh-CN" } = Astro.props;
 const isEn = lang === "en";
-const endpoint = "https://gateway.js.gripe/api/v1/dquery";
+const endpoint = "/api/v1/dquery/lookup";
 
 const t = isEn
   ? {
-      title: ["dns", ".", "js", ".", "gripe"],
+      title: ["dquery", ".", "js", ".", "gripe"],
       subtitle: "Public DNS",
       name: "DNS Name",
       type: "RR Type",
@@ -20,7 +20,7 @@ const t = isEn
       otherLabel: "中文"
     }
   : {
-      title: ["dns", ".", "js", ".", "gripe"],
+      title: ["dquery", ".", "js", ".", "gripe"],
       subtitle: "公共 DNS",
       name: "DNS 名称",
       type: "记录类型",
@@ -42,7 +42,7 @@ const t = isEn
     </nav>
 
     <header class="brand">
-      <img src="/media/mascot-query.png" alt="" />
+      <img src="/media/dquery-login-pixel-v2.png" alt="" />
       <div>
         <h1 id="page-title">
           {t.title.map((part) => <span>{part}</span>)}

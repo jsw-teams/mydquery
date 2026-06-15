@@ -12,7 +12,7 @@ Disallow: /
 User-agent: *
 Allow: /
 
-Sitemap: https://dns.js.gripe/sitemap.xml
+Sitemap: https://dquery.js.gripe/sitemap.xml
 `,
     {
       headers: {

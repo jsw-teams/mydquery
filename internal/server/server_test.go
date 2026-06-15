@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,15 +20,195 @@ func TestDNSCacheKeyNormalizesQueryIDCaseAndPadding(t *testing.T) {
 	second := newTestQuery(200, "example.com.", dns.TypeA)
 	addPadding(second)
 
-	firstKey := dnsCacheKey("global", "cloudflare", "", first)
-	secondKey := dnsCacheKey("global", "cloudflare", "", second)
+	firstKey := dnsCacheKey("public", "global", "cloudflare", "", first)
+	secondKey := dnsCacheKey("public", "global", "cloudflare", "", second)
 	if firstKey != secondKey {
 		t.Fatalf("expected equivalent DNS queries to share cache key, got %q and %q", firstKey, secondKey)
 	}
 
 	otherType := newTestQuery(100, "example.com.", dns.TypeAAAA)
-	if firstKey == dnsCacheKey("global", "cloudflare", "", otherType) {
+	if firstKey == dnsCacheKey("public", "global", "cloudflare", "", otherType) {
 		t.Fatal("expected qtype to be part of cache key")
+	}
+}
+
+func TestResolverDoHPathRequiresUUIDAndDnsQuerySuffix(t *testing.T) {
+	valid := "/dns-query/550e8400-e29b-41d4-a716-446655440000"
+	if !isResolverDoHPath(valid) {
+		t.Fatal("expected UUID resolver DoH path to be accepted")
+	}
+	if got := resolverUUIDFromPath(valid); got != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("unexpected resolver uuid %q", got)
+	}
+	for _, path := range []string{"/usr_abc/dns-query", "/api/v1/dquery/usr_abc", "/550e8400-e29b-41d4-a716-446655440000", "/550e8400-e29b-41d4-a716-446655440000/dns-query", "/dns-query"} {
+		if isResolverDoHPath(path) {
+			t.Fatalf("expected %s not to be treated as resolver DoH", path)
+		}
+	}
+}
+
+func TestAnonymousDNSQueryRegionalPolicyBlocksCNHKAndMO(t *testing.T) {
+	app := &App{cfg: &config.Config{RegionalPolicy: config.RegionalPolicyConfig{
+		Enabled:             true,
+		ClientCountryHeader: "CF-IPCountry",
+		AnonymousDNSQuery: config.AnonymousDNSQueryPolicy{
+			BlockedCountries: []string{"CN", "HK", "MO"},
+			StatusCode:       http.StatusUnavailableForLegalReasons,
+			Reason:           "anonymous_doh_unavailable_in_region",
+			BodyMessage:      "blocked",
+		},
+	}}}
+	for _, country := range []string{"CN", "HK", "MO"} {
+		req := httptest.NewRequest(http.MethodGet, "/dns-query", nil)
+		req.Header.Set("CF-IPCountry", country)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnavailableForLegalReasons {
+			t.Fatalf("expected %s to be blocked with 451, got %d", country, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("expected 451 cache-control no-store, got %q", got)
+		}
+	}
+}
+
+func TestFrontendLookupIgnoresRegionalPolicyBeforeInitialization(t *testing.T) {
+	app := &App{cfg: &config.Config{RegionalPolicy: config.RegionalPolicyConfig{
+		Enabled:             true,
+		ClientCountryHeader: "CF-IPCountry",
+		AnonymousDNSQuery: config.AnonymousDNSQueryPolicy{
+			BlockedCountries: []string{"CN", "HK", "MO"},
+			StatusCode:       http.StatusUnavailableForLegalReasons,
+			Reason:           "anonymous_doh_unavailable_in_region",
+			BodyMessage:      "blocked",
+		},
+	}}}
+	for _, country := range []string{"CN", "HK", "MO"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/dquery/lookup", nil)
+		req.Header.Set("CF-IPCountry", country)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code == http.StatusUnavailableForLegalReasons {
+			t.Fatalf("expected frontend lookup path to ignore regional policy for %s", country)
+		}
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected uninitialized frontend lookup without dns payload to reach request validation, got %d %s", rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestSetupInitCreatesLocalSystemAdminAndSession(t *testing.T) {
+	app := newTestApp(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/dquery/setup/status", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"initialized":false`) {
+		t.Fatalf("expected uninitialized setup status, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	body := strings.NewReader(`{"email":"admin@example.com","display_name":"Admin","password":"ChangeMe123!"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/dquery/setup/init", body)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected setup init 201, got %d %s", rec.Code, rec.Body.String())
+	}
+	if cookie := rec.Result().Cookies(); len(cookie) == 0 || cookie[0].Name != "dquery_session" {
+		t.Fatalf("expected setup init to create dquery_session cookie, got %#v", cookie)
+	}
+
+	var count int
+	if err := app.store.db.QueryRow(`SELECT COUNT(1) FROM dquery_users WHERE role = 'system_admin'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("expected one system admin, count=%d err=%v", count, err)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/dquery/setup/init", strings.NewReader(`{"email":"again@example.com","password":"ChangeMe123!"}`))
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected duplicate setup init 409, got %d", rec.Code)
+	}
+}
+
+func TestLocalLoginAndAuthMeUseLocalSessionCookie(t *testing.T) {
+	app := newTestApp(t)
+	user, err := app.store.createLocalUser("admin@example.com", "Admin", "system_admin", "ChangeMe123!")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.store.ensureDefaultProfile(user)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/dquery/auth/me", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected auth/me without cookie 401, got %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/dquery/auth/login", strings.NewReader(`{"email":"admin@example.com","password":"ChangeMe123!"}`))
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected local login 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("expected session cookie from local login")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/dquery/auth/me", nil)
+	req.AddCookie(cookies[0])
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected auth/me with cookie 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	gotUser := payload["user"].(map[string]any)
+	if gotUser["id"] != user.ID {
+		t.Fatalf("expected local user id %s, got %#v", user.ID, gotUser["id"])
+	}
+}
+
+func TestDNSQueryOptionsReturnsCORSForDQueryOrigin(t *testing.T) {
+	app := &App{cfg: &config.Config{}}
+	req := httptest.NewRequest(http.MethodOptions, "/dns-query", nil)
+	req.Header.Set("Origin", "https://dquery.js.gripe")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected OPTIONS to return 204, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://dquery.js.gripe" {
+		t.Fatalf("unexpected allow-origin %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, "POST") {
+		t.Fatalf("expected POST in allow-methods, got %q", got)
+	}
+}
+
+func newTestApp(t *testing.T) *App {
+	t.Helper()
+	store, err := newAccountStore(filepath.Join(t.TempDir(), "dquery.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.db.Close() })
+	return &App{cfg: &config.Config{}, store: store}
+}
+
+func TestCacheNamespaceIncludesResolverUUID(t *testing.T) {
+	query := newTestQuery(100, "example.com.", dns.TypeA)
+	publicKey := dnsCacheKey(cacheNamespace(""), "global", "cloudflare", "", query)
+	resolverKey := dnsCacheKey(cacheNamespace("550e8400-e29b-41d4-a716-446655440000"), "global", "cloudflare", "", query)
+	if publicKey == resolverKey {
+		t.Fatal("expected resolver UUID to separate cache namespace")
 	}
 }
 
@@ -55,7 +237,7 @@ func TestReadQueryBytesAcceptsPaddedGETParam(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded := base64.URLEncoding.EncodeToString(payload)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/dquery?dns="+encoded, nil)
+	req := httptest.NewRequest(http.MethodGet, "/dns-query?dns="+encoded, nil)
 
 	app := &App{}
 	got, err := app.readQueryBytes(req)

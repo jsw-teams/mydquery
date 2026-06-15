@@ -1,20 +1,22 @@
 # dquery
 
-`dquery` is the JS.Gripe DNS query service for `dns.js.gripe` and the DoH API behind `gateway.js.gripe/api/v1/dquery`.
+`dquery` is the JS.Gripe DNS query service for `dquery.js.gripe`.
 
 Current production shape:
 
 - Backend: Go service `dqueryd`
-- Public API: DNS-over-HTTPS wire format
+- Public API: DNS-over-HTTPS wire format at `/dns-query`
 - Frontend: Astro static site
 - Routing: ChinaMax domain rules plus visitor-aware global routing
 - Storage: SQLite for account-owned DNS profiles, rules, tokens, and logs
-- Identity: account-system is the source of user identity
-- Reverse proxy: OpenResty on `gateway.js.gripe` and `dns.js.gripe`
+- Identity: local dquery sessions with optional account-system integration in the current console flow
+- Reverse proxy: OpenResty on `dquery.js.gripe`; `dns.js.gripe` is legacy
 
 ## Behavior
 
-Public DNS queries remain anonymous. Account-system integration is used for the personal DNS console and future per-user rules.
+Public DNS queries remain anonymous at `https://dquery.js.gripe/dns-query`. Resolver/profile-scoped DoH uses `https://dquery.js.gripe/dns-query/{resolver_uuid}`; the UUID is a resolver profile id, not a user id or secret.
+
+When regional policy is enabled, anonymous `/dns-query` returns HTTP 451 for `CF-IPCountry` values `CN`, `HK`, and `MO`. Resolver UUID DoH is controlled separately by resolver/profile policy.
 
 Routing rules:
 
@@ -32,7 +34,7 @@ X-DQuery-ECS-Source
 X-DQuery-Cache
 ```
 
-OpenResty exposes those headers to `https://dns.js.gripe` with CORS.
+OpenResty exposes those headers to `https://dquery.js.gripe` with CORS.
 
 ## Main Paths
 
@@ -76,6 +78,7 @@ Key fields:
 - `routing.global`: global route and upstream
 - `ecs.*`: visitor/client ECS masks and optional explicit ECS controls
 - `cache.*`: DNS and HTTP cache policy
+- `regional_policy.anonymous_dns_query.blocked_countries`: regions blocked from anonymous `/dns-query`
 - `account.base_url`: account-system API base URL
 - `storage.db_path`: SQLite database path
 - `upstreams.*.max_concurrent`: upstream concurrency cap
@@ -89,7 +92,7 @@ configs/account.integration.example.yaml
 Create a client in account-system with:
 
 - application name: `dquery`
-- redirect URI: `https://dns.js.gripe/auth/account/callback`
+- redirect URI: `https://dquery.js.gripe/auth/account/callback`
 - scopes: `accounts:read`, `identities:resolve`, `identities:link`
 
 Save the returned `client_id` and one-time API key in deployment secrets/config. Do not treat the application name as the client id.
@@ -104,7 +107,7 @@ account:
   api_key: "account-system-one-time-apikey"
   base_url: "http://127.0.0.1:9100/api/v1/myaccount"
   login_url: "https://account.js.gripe/login"
-  redirect_uri: "https://dns.js.gripe/auth/account/callback"
+  redirect_uri: "https://dquery.js.gripe/auth/account/callback"
   scopes:
     - accounts:read
     - identities:resolve
@@ -174,17 +177,17 @@ sudo openresty -s reload
 Health:
 
 ```bash
-curl https://gateway.js.gripe/api/v1/dquery/healthz
+curl https://dquery.js.gripe/api/v1/dquery/healthz
 ```
 
 Simulate global visitor routing:
 
 ```bash
-curl -k --resolve gateway.js.gripe:443:127.0.0.1 \
+curl -k --resolve dquery.js.gripe:443:127.0.0.1 \
   -D - -o /tmp/dquery.dns \
   -H 'CF-IPCountry: US' \
   -H 'CF-Connecting-IP: 8.8.8.8' \
-  'https://gateway.js.gripe/api/v1/dquery?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE'
+  'https://dquery.js.gripe/dns-query?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE'
 ```
 
 Expected headers include:

@@ -5,7 +5,7 @@ account:
   api_key: "[DQUERY_ACCOUNT_APIKEY]"
   base_url: "https://gateway.js.gripe/api/v1/myaccount"
   login_url: "https://account.js.gripe/login"
-  redirect_uri: "https://dns.js.gripe/auth/account/callback"
+  redirect_uri: "https://dquery.js.gripe/auth/account/callback"
   scopes:
     - accounts:read
     - identities:resolve

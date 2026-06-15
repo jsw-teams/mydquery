@@ -3,7 +3,7 @@ const pages = ["", "help/", "en/", "en/help/"];
 export function GET() {
   const urls = pages
     .map(
-      (page) => `<url><loc>https://dns.js.gripe/${page}</loc><changefreq>weekly</changefreq><priority>${page === "" ? "1.0" : "0.8"}</priority></url>`
+      (page) => `<url><loc>https://dquery.js.gripe/${page}</loc><changefreq>weekly</changefreq><priority>${page === "" ? "1.0" : "0.8"}</priority></url>`
     )
     .join("");
 

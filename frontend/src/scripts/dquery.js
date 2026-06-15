@@ -1,5 +1,5 @@
 const script = document.currentScript;
-const endpoint = script?.dataset.endpoint || "https://gateway.js.gripe/api/v1/dquery";
+const endpoint = script?.dataset.endpoint || "/api/v1/dquery/lookup";
 const isEn = script?.dataset.lang === "en";
 
 const typeCodes = {
