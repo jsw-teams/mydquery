@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	"gateway-dquery-go/internal/chinarules"
 	"gateway-dquery-go/internal/config"
 )
 
@@ -255,6 +257,39 @@ func TestCloudflareEdgeIPIsNotUsedAsVisitorECS(t *testing.T) {
 	}
 	if isCloudflareEdgeIP("8.8.8.8") {
 		t.Fatal("expected ordinary public resolver IP not to be detected as Cloudflare edge")
+	}
+}
+
+func TestMainlandVisitorUsesChinaRulesForRouting(t *testing.T) {
+	rulePath := filepath.Join(t.TempDir(), "rules.json")
+	if err := os.WriteFile(rulePath, []byte(`{
+		"source": "test",
+		"exacts": [],
+		"suffixes": [],
+		"keywords": [],
+		"cidr_v4": [],
+		"cidr_v6": []
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := chinarules.Load(rulePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{
+		cfg: &config.Config{Routing: config.RoutingConfig{
+			CN:     config.RouteConfig{Upstream: "alidns_cn_public"},
+			Global: config.RouteConfig{Upstream: "cloudflare_gateway_global"},
+		}},
+		rules: rules,
+	}
+
+	for _, visitorIP := range []string{"223.5.5.5", "112.5.241.88", "39.144.252.248", "2409:8934:4cf4:c066:e80d:dd66:311f:2687"} {
+		routeName, routeCfg := app.pickRouteForVisitor("example.com.", visitorIP, "", time.Now())
+		if routeName != "global" || routeCfg.Upstream != "cloudflare_gateway_global" {
+			t.Fatalf("expected mainland visitor %s to use global route for generic domain, got route=%q upstream=%q", visitorIP, routeName, routeCfg.Upstream)
+		}
 	}
 }
 

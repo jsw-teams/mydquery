@@ -2546,11 +2546,69 @@ func isMainlandChinaRequest(visitorIP, country string) bool {
 	if strings.EqualFold(strings.TrimSpace(country), "CN") {
 		return true
 	}
-	ip := net.ParseIP(strings.TrimSpace(visitorIP))
-	if ip == nil {
+	parsed := net.ParseIP(strings.TrimSpace(visitorIP))
+	if parsed == nil {
 		return false
 	}
-	return ip.IsPrivate() || ip.IsLoopback()
+	if parsed.IsPrivate() || parsed.IsLoopback() {
+		return true
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(visitorIP))
+	if err != nil {
+		return false
+	}
+	if addr.Is4In6() {
+		addr = addr.Unmap()
+	}
+	return isChinaClientIP(addr)
+}
+
+var chinaClientIPOnce sync.Once
+var chinaClientIPPrefixes []netip.Prefix
+
+func isChinaClientIP(addr netip.Addr) bool {
+	chinaClientIPOnce.Do(func() {
+		chinaClientIPPrefixes = loadPrefixFiles(
+			"/var/lib/dqueryd/geoip/china.txt",
+			"/var/lib/dqueryd/geoip/china6.txt",
+			"/opt/OpenClash/luci-app-openclash/root/etc/openclash/china_ip_route.ipset",
+			"/opt/OpenClash/luci-app-openclash/root/etc/openclash/china_ip6_route.ipset",
+		)
+	})
+	for _, prefix := range chinaClientIPPrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func loadPrefixFiles(paths ...string) []netip.Prefix {
+	prefixes := make([]netip.Prefix, 0, 6000)
+	for _, path := range paths {
+		file, err := os.Open(path)
+		if err != nil {
+			log.Printf("dquery: load china ip prefixes: %s: %v", path, err)
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "define ") || strings.HasPrefix(line, "add ") || line == "{" || line == "}" {
+				continue
+			}
+			line = strings.TrimSuffix(line, ",")
+			prefix, err := netip.ParsePrefix(line)
+			if err == nil {
+				prefixes = append(prefixes, prefix)
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("dquery: scan china ip prefixes: %s: %v", path, err)
+		}
+		_ = file.Close()
+	}
+	return prefixes
 }
 
 var cloudflareEdgePrefixes = mustParsePrefixes(

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-RULE_URL="${RULE_URL:-https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMax/ChinaMax_Classical.yaml}"
+RULE_URL="${RULE_URL:-https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/ChinaMaxNoIP/ChinaMaxNoIP_Classical.yaml}"
 APP_DIR="${APP_DIR:-/opt/dquery}"
 SRC_DIR="${SRC_DIR:-/opt/dquery/rules-src}"
+SRC_FILE="${SRC_FILE:-ChinaMaxNoIP_Classical.yaml}"
 OUT_FILE="${OUT_FILE:-/var/lib/dqueryd/chinamax_classical.compact.json}"
 LOCK_FILE="${LOCK_FILE:-/tmp/dquery-rules-update.lock}"
-PUSH_TO_GITHUB="${PUSH_TO_GITHUB:-1}"
+PUSH_TO_GITHUB="${PUSH_TO_GITHUB:-0}"
 GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-dquery-rules-bot}"
 GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-dquery-rules-bot@users.noreply.github.com}"
 
@@ -22,7 +23,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-curl -fsSL --retry 3 --retry-delay 5 "$RULE_URL" -o "$src_tmp"
+curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 10 --max-time 90 "$RULE_URL" -o "$src_tmp"
 
 "$APP_DIR/bin/chinamax-build" \
   -src "$src_tmp" \
@@ -30,7 +31,7 @@ curl -fsSL --retry 3 --retry-delay 5 "$RULE_URL" -o "$src_tmp"
   -exclude "$APP_DIR/data/local-exclude.txt" \
   -out "$out_tmp"
 
-install -m 0644 "$src_tmp" "$SRC_DIR/ChinaMax_Classical.yaml"
+install -m 0644 "$src_tmp" "$SRC_DIR/$SRC_FILE"
 install -m 0644 "$out_tmp" "$OUT_FILE"
 
 if command -v systemctl >/dev/null 2>&1; then
@@ -40,8 +41,8 @@ fi
 if [ "$PUSH_TO_GITHUB" = "1" ] && command -v git >/dev/null 2>&1; then
   cd "$APP_DIR"
 
-  if ! git diff --quiet -- rules-src/ChinaMax_Classical.yaml; then
-    git add rules-src/ChinaMax_Classical.yaml
+  if ! git diff --quiet -- "rules-src/$SRC_FILE"; then
+    git add "rules-src/$SRC_FILE"
     git \
       -c user.name="$GIT_AUTHOR_NAME" \
       -c user.email="$GIT_AUTHOR_EMAIL" \
